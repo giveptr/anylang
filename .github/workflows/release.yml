@@ -1,0 +1,54 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  build:
+    name: build (${{ matrix.label }})
+    runs-on: ${{ matrix.platform }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            platform: ubuntu-24.04
+            container: ubuntu:22.04
+            args: --bundles deb,rpm
+          - label: windows-x64
+            platform: windows-latest
+            args: --no-bundle
+    steps:
+      - name: prepare container
+        if: matrix.container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential \
+            ca-certificates curl git pkg-config libwebkit2gtk-4.1-dev
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      - name: get version
+        id: version
+        shell: bash
+        run: echo "name=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ steps.version.outputs.name }}
+          releaseDraft: true
+          args: ${{ matrix.args }}
+          uploadPlainBinary: true

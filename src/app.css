@@ -1,0 +1,178 @@
+@import 'tailwindcss';
+
+@font-face {
+  font-family: 'notdef';
+  src: url('./lib/assets/notdef.otf');
+}
+
+@theme {
+  --color-ground: var(--color-neutral-50);
+  --color-surface: var(--color-white);
+  --color-sunken: var(--color-neutral-100);
+  --color-line: var(--color-neutral-200);
+  --color-edge: var(--color-neutral-300);
+
+  --color-ink: var(--color-neutral-900);
+  --color-ink-soft: var(--color-neutral-500);
+  --color-ink-faint: var(--color-neutral-400);
+
+  --color-accent: var(--color-blue-600);
+  --color-accent-strong: var(--color-blue-700);
+  --color-accent-deep: var(--color-blue-800);
+  --color-accent-wash: var(--color-blue-50);
+  --color-on-accent: var(--color-white);
+  --color-on-wash: var(--color-blue-600);
+
+  --color-selected: var(--color-neutral-200);
+  --color-on-selected: var(--color-neutral-900);
+
+  --color-done: var(--color-emerald-600);
+  --color-pending: var(--color-amber-700);
+  --color-pending-wash: var(--color-amber-50);
+  --color-alarm: var(--color-red-600);
+  --color-alarm-wash: var(--color-red-50);
+  --color-close: var(--color-red-500);
+  --color-highlight: var(--color-amber-200);
+  --color-highlight-strong: var(--color-orange-400);
+  --color-on-highlight: var(--color-neutral-950);
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    ui-monospace, 'Cascadia Mono', Menlo, Consolas, 'DejaVu Sans Mono',
+    monospace;
+}
+
+[data-theme='dark'] {
+  --color-ground: var(--color-neutral-950);
+  --color-surface: var(--color-neutral-900);
+  --color-sunken: var(--color-neutral-800);
+  --color-line: var(--color-neutral-800);
+  --color-edge: var(--color-neutral-700);
+
+  --color-ink: var(--color-neutral-100);
+  --color-ink-soft: var(--color-neutral-400);
+  --color-ink-faint: var(--color-neutral-500);
+
+  --color-accent: var(--color-blue-400);
+  --color-accent-strong: var(--color-blue-600);
+  --color-accent-deep: var(--color-blue-700);
+  --color-accent-wash: var(--color-blue-950);
+  --color-on-accent: var(--color-white);
+  --color-on-wash: var(--color-neutral-100);
+
+  --color-selected: color-mix(
+    in oklab,
+    var(--color-neutral-700) 50%,
+    var(--color-neutral-800)
+  );
+  --color-on-selected: var(--color-neutral-50);
+
+  --color-done: var(--color-emerald-600);
+  --color-pending: var(--color-amber-400);
+  --color-pending-wash: color-mix(
+    in oklab,
+    var(--color-amber-400) 12%,
+    var(--color-neutral-900)
+  );
+  --color-alarm: var(--color-red-400);
+  --color-alarm-wash: var(--color-red-950);
+  --color-close: var(--color-red-600);
+  --color-highlight: var(--color-amber-300);
+  --color-highlight-strong: var(--color-orange-400);
+}
+
+@utility icon-button {
+  @apply grid place-items-center rounded-md text-ink-faint;
+  @apply hover:bg-sunken hover:text-ink;
+}
+
+@utility chrome-button {
+  @apply grid place-items-center text-ink-soft transition-colors;
+  @apply hover:bg-surface hover:text-ink;
+}
+
+@utility bare-input {
+  @apply min-w-0 flex-1 bg-transparent text-sm outline-none;
+  @apply placeholder:text-ink-faint;
+}
+
+@utility box-input {
+  @apply w-full rounded-lg bg-surface px-3 py-2 text-sm ring-1 ring-edge;
+  @apply placeholder:text-ink-faint focus:ring-accent;
+}
+
+@utility checkers {
+  background-image:
+    linear-gradient(45deg, var(--color-sunken) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--color-sunken) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--color-sunken) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--color-sunken) 75%);
+  background-position:
+    0 0,
+    0 6px,
+    6px -6px,
+    -6px 0;
+  background-size: 12px 12px;
+}
+
+@utility option {
+  @apply flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm;
+  @apply hover:bg-sunken;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    background: transparent;
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  mark {
+    border-radius: 0.125rem;
+    background: var(--color-highlight);
+    color: var(--color-on-highlight);
+  }
+
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input,
+  textarea,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  :focus {
+    outline: none;
+  }
+
+  :root[data-keys] :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  ::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+}
