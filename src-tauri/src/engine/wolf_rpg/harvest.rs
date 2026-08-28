@@ -93,17 +93,17 @@ fn suffix_only(text: &str) -> bool {
         && held[1..].chars().all(|one| one.is_ascii_alphanumeric())
 }
 
+fn for_the_engine(text: &str) -> bool {
+    symbolic(text) || told_to(text) || suffix_only(text) || tabled(text) || keylike(text)
+}
+
 impl Care {
     fn held_back(self, text: &str) -> bool {
         match self {
             Self::Shown => false,
             Self::Called | Self::Kept => true,
             Self::Label | Self::Compared | Self::Names | Self::NamedBy | Self::Plain => {
-                symbolic(text)
-                    || told_to(text)
-                    || suffix_only(text)
-                    || tabled(text)
-                    || keylike(text)
+                for_the_engine(text)
             }
         }
     }
