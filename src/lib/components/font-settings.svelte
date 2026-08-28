@@ -99,26 +99,27 @@
         class="grid gap-x-6 gap-y-3 border-t border-line py-4 @2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
       >
         <div class="flex min-w-0 flex-col gap-2">
-          <div class="flex min-h-9 items-center gap-2">
-            <span class="min-w-0 flex-1 text-xs text-ink-faint">
-              <PathTail path={one.at || one.name} />
+          <div class="flex min-h-9 items-baseline gap-2">
+            <span class="min-w-0 truncate text-sm text-ink">
+              {one.name}
             </span>
+            {#if one.at}
+              <span class="min-w-0 flex-1 text-xs text-ink-faint">
+                <PathTail path={one.at} />
+              </span>
+            {/if}
             {#if one.builtin}
-              <span class="shrink-0 text-[11px] text-ink-faint">engine</span>
+              <span class="ml-auto shrink-0 text-[11px] text-ink-faint">
+                engine
+              </span>
             {/if}
           </div>
-          {#if face && drawn(face)}
-            <p
-              class="overflow-hidden text-xl leading-snug whitespace-nowrap text-ink"
-              style={styled(face)}
-            >
-              {sample}
-            </p>
-          {:else}
-            <p class="truncate text-xl leading-snug text-ink-faint">
-              {one.name}
-            </p>
-          {/if}
+          <p
+            class="overflow-hidden text-xl leading-snug whitespace-nowrap text-ink"
+            style={styled(face, one.name)}
+          >
+            {sample}
+          </p>
         </div>
 
         <div class="flex min-w-0 flex-col gap-2">

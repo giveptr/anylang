@@ -16,10 +16,12 @@ export function drawn(at: string) {
   return !!loaded[at];
 }
 
-export function styled(at: string) {
-  const family = loaded[at];
+export function styled(at: string, family = '') {
+  const wanted = (loaded[at] || family)
+    .replace(/\p{Cc}/gu, '')
+    .replace(/["\\]/g, '\\$&');
 
-  return family ? `font-family: "${family}", "notdef"` : '';
+  return wanted ? `font-family: "${wanted}", "notdef"` : '';
 }
 
 export async function show(at: string) {
