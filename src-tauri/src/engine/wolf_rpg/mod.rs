@@ -26,7 +26,6 @@ mod text;
 mod unprot;
 mod unseal;
 
-use crate::backup;
 use crate::engine::fonts::Fonts;
 use crate::engine::pictures::{Handed, Shot};
 use crate::engine::{
@@ -87,7 +86,7 @@ impl Engine for WolfRpg {
     fn fonts(&self, game_dir: &Path, store: &Path) -> Vec<Font> {
         let root = source::root(game_dir, store);
 
-        backup::original_now(store, game_dir, &source::game_dat(&root))
+        reading::opened_now(store, game_dir, &source::game_dat(&root))
             .and_then(|raw| game::read(&raw).ok())
             .map(|held| fonts::faces(game_dir, &held, store))
             .unwrap_or_default()
@@ -187,6 +186,50 @@ mod tests {
             vec![("Pixelify Sans".to_string(), String::new())],
             "a Wolf game names its face in Game.dat and draws every letter with it, so a \
              translation into a writing that face has no glyph for is unreadable"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_font_is_offered_just_the_same_when_the_game_keeps_its_data_packed() {
+        let at = sandbox();
+        let root = at.path();
+        let store = sandbox();
+
+        let data = root.join(source::DATA);
+        fs::create_dir_all(&data).unwrap();
+        fs::write(root.join("Game.exe"), [0; 4]).unwrap();
+        fs::write(
+            data.join("BasicData.wolf"),
+            archive::archived(
+                &[(
+                    "Game.dat",
+                    fixture::game("Title", "", "Pixelify Sans").as_slice(),
+                )],
+                None,
+            ),
+        )
+        .unwrap();
+
+        let engine = detect(root).expect("a wolf game");
+        let quiet = Quiet;
+
+        engine
+            .prepare(
+                Prepare::over(root, &store.path().join("source"), store.path()).heard_by(&quiet),
+            )
+            .await
+            .expect("the game is read");
+
+        assert_eq!(
+            engine
+                .fonts(root, store.path())
+                .into_iter()
+                .map(|one| one.name)
+                .collect::<Vec<String>>(),
+            ["Pixelify Sans"],
+            "the Game.dat of a packed game is opened out into the store, which is outside the \
+             game, so looking for it through the backup finds nothing and the reader is offered \
+             no face to swap at all"
         );
     }
 
