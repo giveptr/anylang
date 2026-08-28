@@ -4,6 +4,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+pub const LITERAL: &str = r#"(?P<quoted>'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")"#;
+
 const FORMAT_SPEC: &str = r"%(?:\([^)]*\)[-+ #0]*|[-+#0]*)\d*(?:\.\d+)?[hlL]?[diouxXeEfFgGcrsa]";
 const VARIABLE: &str = r"\[(?:[^\[\]]|\[[^\[\]]*\])+\]";
 const TAG: &str = r"\{[^{}]*\}";
@@ -110,6 +112,36 @@ pub fn unmarked(text: &str) -> Cow<'_, str> {
 
 pub fn spoken(text: &str) -> Cow<'_, str> {
     RE_ASIDE.replace_all(text, "")
+}
+
+pub fn requoted(literal: &str) -> String {
+    let mut letters = literal.chars();
+
+    let Some(quote) = letters.next().filter(|held| ['"', '\''].contains(held)) else {
+        return literal.to_string();
+    };
+
+    let body = letters.as_str();
+    let mut letters = body.strip_suffix(quote).unwrap_or(body).chars();
+    let mut out = String::with_capacity(body.len() + 4);
+
+    while let Some(letter) = letters.next() {
+        match letter {
+            '\\' => match letters.next() {
+                Some('"') => out.push_str("\\\""),
+                Some(next) if next == quote => out.push(next),
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => {}
+            },
+            '"' => out.push_str("\\\""),
+            other => out.push(other),
+        }
+    }
+
+    out
 }
 
 pub fn escape(text: &str) -> String {

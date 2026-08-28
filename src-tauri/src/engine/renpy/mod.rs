@@ -8,6 +8,7 @@ mod python;
 mod script;
 mod shipped;
 mod switch;
+mod table;
 mod text;
 
 use crate::engine::fonts::Fonts;

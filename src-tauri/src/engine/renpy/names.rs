@@ -1,5 +1,5 @@
-use crate::engine::renpy::{GAME_DIR, TL_DIR, WORKING, script, scripts, text};
-use anyhow::{Context, Result};
+use crate::engine::renpy::{GAME_DIR, TL_DIR, scripts, table, text};
+use anyhow::Result;
 use regex::Regex;
 use std::collections::HashSet;
 use std::fs;
@@ -9,43 +9,24 @@ use std::sync::LazyLock;
 const FILE: &str = concat!(env!("CARGO_PKG_NAME"), "_names.rpy");
 
 static RE_CHARACTER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(concat!(
-        r#"(?m)(?:^|[^A-Za-z0-9_])(?:NVL|Bubble)?Character\s*\(\s*(?:name\s*=\s*)?(?:_\s*\(\s*)?"#,
-        r#"(?:'(?P<single>(?:[^'\\]|\\.)*)'|"(?P<double>(?:[^"\\]|\\.)*)")"#
+    Regex::new(&format!(
+        concat!(
+            r"(?m)(?:^|[^A-Za-z0-9_])(?:NVL|Bubble)?Character\s*\(\s*",
+            r"(?:name\s*=\s*)?(?:_\s*\(\s*)?{}"
+        ),
+        text::LITERAL
     ))
     .expect("RE_CHARACTER is a valid pattern")
 });
 
-fn doubled(body: &str, quote: char) -> String {
-    let mut out = String::with_capacity(body.len() + 4);
-    let mut letters = body.chars().peekable();
-
-    while let Some(letter) = letters.next() {
-        match letter {
-            '\\' => match letters.next() {
-                Some('"') => out.push_str("\\\""),
-                Some(next) if next == quote => out.push(next),
-                Some(next) => {
-                    out.push('\\');
-                    out.push(next);
-                }
-                None => {}
-            },
-            '"' => out.push_str("\\\""),
-            other => out.push(other),
-        }
-    }
-
-    out
-}
-
 fn found(game_dir: &Path) -> Vec<String> {
     let inner = game_dir.join(GAME_DIR);
+    let beside = inner.join(TL_DIR);
     let mut seen = HashSet::new();
     let mut out = Vec::new();
 
     for path in scripts(&inner) {
-        if path.starts_with(inner.join(TL_DIR)) {
+        if path.starts_with(&beside) {
             continue;
         }
 
@@ -54,11 +35,7 @@ fn found(game_dir: &Path) -> Vec<String> {
         };
 
         for found in RE_CHARACTER.captures_iter(&text) {
-            let name = match (found.name("single"), found.name("double")) {
-                (Some(quoted), _) => doubled(quoted.as_str(), '\''),
-                (_, Some(quoted)) => doubled(quoted.as_str(), '"'),
-                _ => continue,
-            };
+            let name = text::requoted(&found["quoted"]);
 
             if text::unmarked(&name).chars().any(char::is_alphabetic) && seen.insert(name.clone()) {
                 out.push(name);
@@ -70,37 +47,13 @@ fn found(game_dir: &Path) -> Vec<String> {
 }
 
 pub fn add(source: &Path, game_dir: &Path) -> Result<u32> {
-    let mut already: HashSet<String> = HashSet::new();
-    for path in scripts(source) {
-        let text =
-            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-
-        already.extend(script::keys(&text));
-    }
-
-    let wanted: Vec<String> = found(game_dir)
-        .into_iter()
-        .filter(|name| !already.contains(name))
-        .collect();
-
-    if wanted.is_empty() {
-        return Ok(0);
-    }
-
-    let mut body = format!("translate {WORKING} strings:\n");
-    for name in &wanted {
-        body.push_str(&format!("\n    old \"{name}\"\n    new \"{name}\"\n"));
-    }
-
-    let at = source.join(FILE);
-    fs::write(&at, body).with_context(|| format!("writing {}", at.display()))?;
-
-    Ok(wanted.len() as u32)
+    table::added(source, FILE, found(game_dir))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::renpy::script;
 
     fn sandbox(body: &str) -> tempfile::TempDir {
         let at = tempfile::tempdir().expect("a temp folder");
@@ -114,6 +67,7 @@ mod tests {
     fn a_name_the_game_speaks_through_is_found_however_it_was_written() {
         let game = sandbox(concat!(
             "define mc = Character('[playername]', color='#5058c2')\n",
+            "# dropped: define gh = Character('Ghost\n",
             "default vall = Character('Аня', color='#aaa11b')\n",
             "default ala = Character('Леди [heroine]')\n",
             "define nar = Character(None, kind=nvl)\n",
@@ -149,7 +103,9 @@ mod tests {
              for and whatever spacing they left, and one that is nothing but a variable holds no \
              word to translate. A name written past the first argument or on a line of its own is \
              the same name: missing it would leave one speaker in the source language while every \
-             other one is translated"
+             other one is translated. A quote nobody closed ends with its line, or the name after \
+             it is swallowed and what gets written out is a key running over two lines that Ren'Py \
+             cannot parse"
         );
     }
 
