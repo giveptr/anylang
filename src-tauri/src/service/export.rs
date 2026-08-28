@@ -1,8 +1,8 @@
-use crate::engine::{Engine, Extra, Install, Undo};
+use crate::engine::{Engine, Extra, Install, Landing, Undo};
 use crate::progress::{Progress, Source};
 use crate::project::Project;
 use crate::scope::{self, Scope, key};
-use crate::service::locate::{self, files_under, open_game};
+use crate::service::locate::{files_under, open_game};
 use crate::store::Store;
 use crate::{backup, store, walk};
 use anyhow::{Context, Result};
@@ -38,7 +38,7 @@ struct Shipment<'a> {
     store: &'a Store,
     project: &'a Project,
     progress: &'a dyn Progress,
-    game_dir: &'a Path,
+    at: Landing<'a>,
     source: &'a Path,
     target: &'a Path,
 }
@@ -47,18 +47,22 @@ struct Shipment<'a> {
 pub async fn export(game_dir: &Path, progress: &dyn Progress, push: Push<'_>) -> Result<Exported> {
     let game = open_game(game_dir).await?;
 
-    let language = game.project.folder();
     let source = &game.source;
     let engine = &game.engine;
     let store = &game.store;
-    let target = locate::landing_of(engine.as_ref(), &game.at, store.root(), &language);
+    let at = Landing {
+        game_dir: &game.at,
+        store: store.root(),
+        language: &game.project.language,
+    };
+    let target = engine.output(at);
 
     let shipment = Shipment {
         engine: Arc::clone(engine),
         store,
         project: &game.project,
         progress,
-        game_dir: &game.at,
+        at,
         source,
         target: &target,
     };
@@ -209,7 +213,7 @@ impl Shipment<'_> {
 
     async fn revert(&self, landing: &Path) -> Result<Landed> {
         let undone = match self.engine.undo() {
-            Undo::Restore => backup::put_back(self.store.root(), self.game_dir, landing).await?,
+            Undo::Restore => backup::put_back(self.store.root(), self.at.game_dir, landing).await?,
             Undo::Remove => walk::removed(landing).await?,
         };
 
@@ -226,8 +230,13 @@ impl Shipment<'_> {
         }
 
         if self.engine.undo() == Undo::Restore {
-            return backup::replace(self.store.root(), self.game_dir, landing, body.into_bytes())
-                .await;
+            return backup::replace(
+                self.store.root(),
+                self.at.game_dir,
+                landing,
+                body.into_bytes(),
+            )
+            .await;
         }
 
         store::write_atomically(landing, body).await
@@ -239,15 +248,14 @@ impl Shipment<'_> {
                 return Ok(());
             }
 
-            return remove_extras(self.engine.as_ref(), self.project, self.game_dir).await;
+            return remove_extras(self.engine.as_ref(), self.project, self.at).await;
         }
 
-        for extra in self.engine.extras(
-            &self.project.language,
-            &self.project.tweaks,
-            &self.project.fonts,
-        ) {
-            let landing = self.game_dir.join(extra.at());
+        for extra in self
+            .engine
+            .extras(self.at, &self.project.tweaks, &self.project.fonts)
+        {
+            let landing = self.at.game_dir.join(extra.at());
 
             if let Some(parent) = landing.parent() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -267,9 +275,9 @@ impl Shipment<'_> {
     }
 }
 
-pub async fn remove_extras(engine: &dyn Engine, project: &Project, game_dir: &Path) -> Result<()> {
-    for extra in engine.extras(&project.language, &project.tweaks, &project.fonts) {
-        walk::removed(&game_dir.join(extra.at())).await?;
+pub async fn remove_extras(engine: &dyn Engine, project: &Project, at: Landing<'_>) -> Result<()> {
+    for extra in engine.extras(at, &project.tweaks, &project.fonts) {
+        walk::removed(&at.game_dir.join(extra.at())).await?;
     }
 
     Ok(())
@@ -322,7 +330,7 @@ mod tests {
             store: &store,
             project: &project,
             progress: &Quiet,
-            game_dir: game.path(),
+            at: Landing::over(game.path(), store.root(), "Japanese"),
             source: &source,
             target: &target,
         };

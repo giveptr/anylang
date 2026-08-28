@@ -29,6 +29,12 @@ fn called(at: &Path) -> Cow<'_, str> {
     at.file_name().unwrap_or_default().to_string_lossy()
 }
 
+pub fn game_now(store: &Path, game_dir: &Path, root: &Path) -> Option<Held> {
+    let raw = opened_now(store, game_dir, &source::game_dat(root))?;
+
+    game::read(&raw).ok()
+}
+
 pub async fn sealed(
     store: &Path,
     game_dir: &Path,

@@ -1,4 +1,4 @@
-use crate::engine::{Engine, Font, Prepare, Undo};
+use crate::engine::{Engine, Font, Landing, Prepare, Undo};
 use crate::progress::{Progress, Source};
 use crate::project::{self, Project};
 use crate::scope::{self, Scope, slashed};
@@ -212,11 +212,16 @@ async fn as_it_shipped(
         return Ok(());
     }
 
-    let landed = locate::landing_of(engine, game_dir, root, language);
+    let at = Landing {
+        game_dir,
+        store: root,
+        language,
+    };
+    let landed = engine.output(at);
 
-    export::remove_extras(engine, project, game_dir).await?;
+    export::remove_extras(engine, project, at).await?;
 
-    if landed.starts_with(game_dir) && backup::taken_over(root, game_dir, &landed).await? {
+    if backup::taken_over(root, game_dir, &landed).await? {
         progress.info(
             Source::Prepare,
             &format!(

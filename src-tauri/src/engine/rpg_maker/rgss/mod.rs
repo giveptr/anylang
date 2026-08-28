@@ -98,7 +98,7 @@ impl Engine for VxAce {
         Ok(Handed::Shipped(pictures::picture(game_dir, store, key)?))
     }
 
-    fn extras(&self, _language: &str, _tweaks: &Tweaks, fonts: &Fonts) -> Vec<Extra> {
+    fn extras(&self, _at: Landing<'_>, _tweaks: &Tweaks, fonts: &Fonts) -> Vec<Extra> {
         fonts::carried(fonts)
     }
 
@@ -227,11 +227,11 @@ mod tests {
         let at = sandbox();
 
         assert_eq!(
-            engine.output(Landing {
-                game_dir: at.path(),
-                store: Path::new("/store/demo"),
-                language: "Japanese",
-            }),
+            engine.output(Landing::over(
+                at.path(),
+                Path::new("/store/demo"),
+                "Japanese"
+            )),
             Path::new("/store/demo").join(STAGED).join("japanese"),
             "the game's own archive is patched by install, so nothing lands beside it"
         );
@@ -288,7 +288,11 @@ mod tests {
                 .heard_by(&quiet)
         };
 
-        for extra in engine.extras("Japanese", &Tweaks::None, &fonts) {
+        for extra in engine.extras(
+            Landing::over(root, store.path(), "Japanese"),
+            &Tweaks::None,
+            &fonts,
+        ) {
             let Extra::Copy { from, at } = extra else {
                 panic!("a font is carried in as a file of its own");
             };

@@ -25,6 +25,7 @@ mod squeeze;
 mod text;
 mod unprot;
 mod unseal;
+mod wolfx;
 
 use crate::engine::fonts::Fonts;
 use crate::engine::pictures::{Handed, Shot};
@@ -100,8 +101,8 @@ impl Engine for WolfRpg {
         Ok(Handed::Shipped(pictures::picture(game_dir, store, key)?))
     }
 
-    fn extras(&self, _language: &str, _tweaks: &Tweaks, fonts: &Fonts) -> Vec<Extra> {
-        fonts::carried(fonts)
+    fn extras(&self, at: Landing<'_>, _tweaks: &Tweaks, fonts: &Fonts) -> Vec<Extra> {
+        fonts::carried(at, fonts)
     }
 
     fn prepare<'a>(&'a self, at: Prepare<'a>) -> BoxFuture<'a, Result<()>> {

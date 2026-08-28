@@ -56,21 +56,17 @@ pub fn source_of(game_dir: &Path) -> Result<PathBuf> {
     Ok(store::source_dir(&store::root_for(game_dir)?))
 }
 
-pub fn landing_of(engine: &dyn Engine, game_dir: &Path, store: &Path, language: &str) -> PathBuf {
-    engine.output(Landing {
-        game_dir,
-        store,
-        language,
-    })
-}
-
 pub async fn landed(
     game_dir: &Path,
     engine: &dyn Engine,
     store: &Path,
     language: &str,
 ) -> Result<HashSet<String>> {
-    let target = landing_of(engine, game_dir, store, language);
+    let target = engine.output(Landing {
+        game_dir,
+        store,
+        language,
+    });
 
     if engine.undo() == Undo::Restore {
         return Ok(backup::everything_kept(store, game_dir)

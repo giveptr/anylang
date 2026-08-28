@@ -13,7 +13,8 @@ pub const UNPACKED: &str = "unpacked";
 const ARCHIVES: [&str; 8] = [
     "wolf", "data", "pak", "bin", "assets", "content", "res", "resource",
 ];
-const SEALED: [&str; 1] = ["wolfx"];
+pub const SEAL: &str = "wolfx";
+const SEALED: [&str; 1] = [SEAL];
 const CARRIERS: [&str; 5] = ["Game", "List", "Data2", "GameFile", "BasicData2"];
 const RUNNERS: [&str; 2] = ["Game.exe", "GamePro.exe"];
 const DEEP: usize = 2;
@@ -146,7 +147,7 @@ pub fn sealed(game_dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-fn suffixed(at: &Path, kind: &str) -> bool {
+pub fn suffixed(at: &Path, kind: &str) -> bool {
     suffixed_by(at, &[kind])
 }
 

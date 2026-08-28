@@ -108,6 +108,15 @@ pub fn carried(language: &str, placed: &[(String, String)]) -> Vec<Extra> {
 
 #[cfg(test)]
 mod tests {
+    use crate::engine::Landing;
+
+    fn landing(language: &'static str) -> Landing<'static> {
+        Landing {
+            game_dir: Path::new("/game"),
+            store: Path::new("/store"),
+            language,
+        }
+    }
     use super::*;
     use crate::engine::renpy::switch::switched;
     use crate::engine::renpy::{Options, RenPy};
@@ -134,7 +143,7 @@ mod tests {
     #[test]
     fn a_face_named_twice_is_carried_into_the_game_once() {
         let wanted = RenPy.extras(
-            "French",
+            landing("French"),
             &tweaks(),
             &swapping(&[("a.ttf", "/y/Charm.otf"), ("b.ttf", "/y/Charm.otf")]),
         );
@@ -164,7 +173,7 @@ mod tests {
         ]);
 
         let carried: Vec<(PathBuf, PathBuf)> = RenPy
-            .extras("Japanese", &tweaks(), &fonts)
+            .extras(landing("Japanese"), &tweaks(), &fonts)
             .into_iter()
             .filter_map(|extra| match extra {
                 Extra::Copy { from, at } => Some((from, at)),
@@ -194,7 +203,7 @@ mod tests {
 
     #[test]
     fn without_a_font_only_the_language_file_is_written() {
-        let wanted = RenPy.extras("Japanese", &tweaks(), &Fonts::default());
+        let wanted = RenPy.extras(landing("Japanese"), &tweaks(), &Fonts::default());
 
         assert_eq!(wanted.len(), 1);
         assert!(matches!(wanted[0], Extra::Write { .. }));

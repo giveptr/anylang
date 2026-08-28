@@ -146,10 +146,22 @@ pub struct Prepare<'a> {
 
 pub const STAGED: &str = "staged";
 
+#[derive(Clone, Copy)]
 pub struct Landing<'a> {
     pub game_dir: &'a Path,
     pub store: &'a Path,
     pub language: &'a str,
+}
+
+#[cfg(test)]
+impl<'a> Landing<'a> {
+    pub fn over(game_dir: &'a Path, store: &'a Path, language: &'a str) -> Self {
+        Self {
+            game_dir,
+            store,
+            language,
+        }
+    }
 }
 
 impl Landing<'_> {
@@ -320,8 +332,8 @@ pub trait Engine: Send + Sync {
         Cow::Borrowed(name)
     }
 
-    fn extras(&self, language: &str, tweaks: &Tweaks, fonts: &fonts::Fonts) -> Vec<Extra> {
-        let _ = (language, tweaks, fonts);
+    fn extras(&self, at: Landing<'_>, tweaks: &Tweaks, fonts: &fonts::Fonts) -> Vec<Extra> {
+        let _ = (at, tweaks, fonts);
         Vec::new()
     }
 

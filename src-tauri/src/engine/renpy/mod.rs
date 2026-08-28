@@ -207,7 +207,8 @@ impl Engine for RenPy {
         chosen(tweaks).to_string()
     }
 
-    fn extras(&self, language: &str, tweaks: &Tweaks, fonts: &Fonts) -> Vec<Extra> {
+    fn extras(&self, at: Landing<'_>, tweaks: &Tweaks, fonts: &Fonts) -> Vec<Extra> {
+        let language = at.language;
         let placed = fonts::landings(fonts);
 
         let Some(body) = switch(language, tweaks, fonts, &placed) else {
@@ -278,7 +279,11 @@ mod tests {
     fn another_engines_tweaks_are_refused_rather_than_guessed_at() {
         assert!(
             RenPy
-                .extras("Japanese", &Tweaks::None, &Fonts::default())
+                .extras(
+                    Landing::over(Path::new("/game"), Path::new("/store"), "Japanese"),
+                    &Tweaks::None,
+                    &Fonts::default(),
+                )
                 .is_empty()
         );
     }

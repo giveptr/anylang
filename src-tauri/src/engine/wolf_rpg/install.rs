@@ -120,6 +120,7 @@ async fn rebuilt(
 struct Tally {
     written: u32,
     drawn: u32,
+    swapped: u32,
     given: u32,
     stuck: u32,
 }
@@ -138,6 +139,10 @@ impl Tally {
         if self.drawn > 0 {
             at.progress
                 .info(at.doing, &format!("{} picture(s) swapped in", self.drawn));
+        }
+        if self.swapped > 0 {
+            at.progress
+                .info(at.doing, &format!("{} font(s) swapped in", self.swapped));
         }
         if self.given > 0 {
             at.progress
@@ -362,6 +367,14 @@ pub fn run(at: Install<'_>) -> BoxFuture<'_, Result<()>> {
             }
             .instrument(tracing::info_span!("wolf.rebuild"))
             .await;
+
+            match fonts::swapped_in(&at, &root).await {
+                Ok(done) => {
+                    tally.swapped += done.swapped;
+                    tally.given += done.given;
+                }
+                Err(why) => tally.stumbled(&at, &why),
+            }
 
             let drew = drawn_in(&at, &root, &mut sealing, &mut tally).await;
 

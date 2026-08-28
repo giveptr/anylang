@@ -1,5 +1,5 @@
 use crate::engine::pictures::remember;
-use crate::engine::wolf_rpg::{archive, game, harvest, pictures, reading, source};
+use crate::engine::wolf_rpg::{archive, fonts, game, harvest, pictures, reading, source};
 use crate::engine::{Prepare, sheet};
 use crate::progress::Source;
 use crate::{backup, walk};
@@ -104,7 +104,10 @@ async fn unpacked(at: &Prepare<'_>, root: &Path) -> Result<()> {
         &format!("{written} file(s) out of {} archive(s)", taken.len()),
     );
 
-    let sealed = source::sealed(at.game_dir);
+    let sealed: Vec<_> = source::sealed(at.game_dir)
+        .into_iter()
+        .filter(|at| fonts::slot_of(at).is_none())
+        .collect();
     if !sealed.is_empty() {
         at.progress.warn(
             Source::Prepare,
