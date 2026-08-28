@@ -1,5 +1,5 @@
 use crate::engine::pictures::remember;
-use crate::engine::wolf_rpg::{archive, game, guard, harvest, pictures, reading, source};
+use crate::engine::wolf_rpg::{archive, game, harvest, pictures, reading, source};
 use crate::engine::{Prepare, sheet};
 use crate::progress::Source;
 use crate::{backup, walk};
@@ -155,18 +155,10 @@ pub async fn run(label: &str, at: Prepare<'_>) -> Result<()> {
         }
     }
 
-    let freed = guard::lifted(&at, &root).await?;
-    if freed > 0 {
-        at.progress.info(
-            Source::Prepare,
-            &format!("{freed} file(s) let go of their Wolf RPG Pro guard"),
-        );
-    }
-
     at.progress.stage(&STEPS, 1);
     drawn(&at).await?;
 
-    let raw = reading::held_by(at.store, at.game_dir, &source::game_dat(&root)).await?;
+    let raw = reading::opened(at.store, at.game_dir, &source::game_dat(&root)).await?;
     game::spelled(&raw).map_err(anyhow::Error::msg)?;
 
     let reached = reading::looked_up(at.store, at.game_dir, &root).await;

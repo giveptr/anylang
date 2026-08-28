@@ -1,206 +1,188 @@
-use crate::engine::wolf_rpg::{database, source, unprot};
-use crate::engine::{Install, Prepare};
-use crate::progress::Source;
-use anyhow::Result;
-use std::path::{Path, PathBuf};
-use tokio::fs;
+use crate::engine::wolf_rpg::{database, unprot};
+use std::path::Path;
 
-const GUARDS: &str = "guards";
-
-fn kept_for(store: &Path, root: &Path, at: &Path) -> PathBuf {
-    let under = at
-        .strip_prefix(root)
-        .expect("a guarded file sits under the root it was read from");
-
-    store.join(GUARDS).join(under)
+fn kind_of(at: &Path) -> Option<unprot::Kind> {
+    at.file_name()
+        .and_then(|named| named.to_str())
+        .and_then(unprot::Kind::of)
 }
 
-async fn kept_yet(spot: &Path) -> bool {
-    fs::metadata(spot).await.is_ok_and(|held| held.len() > 0)
+fn is_plan(at: &Path) -> bool {
+    at.extension()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case(database::PLAN))
 }
 
-async fn kept_at(spot: &Path, body: Vec<u8>) -> Result<()> {
-    if let Some(over) = spot.parent() {
-        fs::create_dir_all(over).await?;
+fn replanned(raw: Vec<u8>) -> Vec<u8> {
+    if database::plan(&raw).is_ok() {
+        return raw;
     }
 
-    fs::write(spot, body).await?;
+    let mut turned = raw.clone();
+    unprot::unplanned(&mut turned);
 
-    Ok(())
+    match database::plan(&turned).is_ok() {
+        true => turned,
+        false => raw,
+    }
 }
 
-pub async fn lifted(at: &Prepare<'_>, root: &Path) -> Result<usize> {
-    let basic = root.join(source::DATA).join(source::BASIC);
-    let mut freed = 0;
+pub fn wraps(at: &Path) -> bool {
+    kind_of(at).is_some()
+}
 
-    let mut listed = match fs::read_dir(&basic).await {
-        Ok(listed) => listed,
-        Err(_) => return Ok(0),
+pub fn opened(raw: Vec<u8>, at: &Path) -> Result<Vec<u8>, String> {
+    if is_plan(at) {
+        return Ok(replanned(raw));
+    }
+
+    let Some(kind) = kind_of(at) else {
+        return Ok(raw);
     };
 
-    let mut found = Vec::new();
-    while let Some(one) = listed.next_entry().await? {
-        found.push(one.path());
-    }
-    found.sort();
-
-    for one in &found {
-        let named = one
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let Some(kind) = unprot::Kind::of(&named) else {
-            continue;
-        };
-
-        let spot = kept_for(at.store, root, one);
-        let mut body = fs::read(one).await?;
-
-        if !unprot::wanted(&body) {
-            if !kept_yet(&spot).await {
-                kept_at(&spot, Vec::new()).await?;
-            }
-
-            continue;
-        }
-
-        let kept = match unprot::freed(&mut body, kind) {
-            Ok(kept) => kept,
-            Err(why) => {
-                at.progress
-                    .warn(Source::Prepare, &format!("{named}: {why}"));
-                continue;
-            }
-        };
-
-        kept_at(&spot, kept.packed()).await?;
-
-        fs::write(one, &body).await?;
-        freed += 1;
-    }
-
-    Ok(freed + replanned(&found).await?)
-}
-
-async fn replanned(found: &[PathBuf]) -> Result<usize> {
-    let mut freed = 0;
-
-    for one in found {
-        if one.extension().and_then(|kind| kind.to_str()) != Some(database::PLAN) {
-            continue;
-        }
-
-        let plan = fs::read(one).await?;
-        if database::plan(&plan).is_ok() {
-            continue;
-        }
-
-        let mut turned = plan;
-        unprot::unplanned(&mut turned);
-        if database::plan(&turned).is_err() {
-            continue;
-        }
-
-        fs::write(one, &turned).await?;
-        freed += 1;
-    }
+    let mut freed = raw;
+    unprot::freed(&mut freed, kind)?;
 
     Ok(freed)
 }
 
-pub async fn again(
-    at: &Install<'_>,
-    root: &Path,
-    one: &source::File,
-    body: &mut Vec<u8>,
-) -> Result<()> {
-    let Some(kind) = one
-        .at
-        .file_name()
-        .and_then(|named| named.to_str())
-        .and_then(unprot::Kind::of)
-    else {
+pub fn sealed(shipped: &[u8], at: &Path, body: &mut Vec<u8>) -> Result<(), String> {
+    let Some(kind) = kind_of(at) else {
         return Ok(());
     };
 
-    let spot = kept_for(at.store, root, &one.at);
-
-    let raw = fs::read(&spot).await.map_err(|_| {
-        anyhow::anyhow!(
-            "nothing is kept about how {} was guarded, so writing it would leave the game \
-             unable to read it. Read the game again.",
-            one.named
-        )
-    })?;
-
-    if raw.is_empty() {
-        return Ok(());
-    }
-
-    let kept = unprot::Guard::unpacked(&raw)
-        .map_err(|why| anyhow::anyhow!("the guard kept for {} is unreadable: {why}", one.named))?;
+    let mut freed = shipped.to_vec();
+    let kept = unprot::freed(&mut freed, kind)?;
 
     unprot::reguarded(body, kind, &kept)
-        .map_err(|why| anyhow::anyhow!("{} could not be guarded again: {why}", one.named))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::wolf_rpg::fixture::sandbox;
-    use crate::progress::Quiet;
-    use std::fs;
+    use crate::engine::wolf_rpg::{fixture, game};
+
+    fn scolded() -> Vec<u8> {
+        let mut out = b"Extracting data violates the guidelines.\0".to_vec();
+        out.extend_from_slice(&fixture::game("A Title", "", "MS Gothic"));
+
+        out
+    }
 
     #[test]
-    fn what_is_kept_about_a_guarded_file_sits_beside_the_game_it_came_from() {
-        let store = Path::new("/store/demo");
-        let root = Path::new("/games/demo");
+    fn a_file_is_opened_out_of_its_scolding_and_sealed_back_into_it_from_the_bytes_alone() {
+        let shipped = scolded();
+        let at = Path::new("/game/Data/BasicData/Game.dat");
 
+        let mut body = opened(shipped.clone(), at).expect("it opens");
+        assert_ne!(body, shipped, "the scolding is off while the file is read");
+
+        sealed(&shipped, at, &mut body).expect("it seals back");
         assert_eq!(
-            kept_for(store, root, &root.join("Data/BasicData/Game.dat")),
-            store.join(GUARDS).join("Data/BasicData/Game.dat"),
-            "the guard is looked up by where the file sits in the game, so two files of one name \
-             never share what is kept about them"
+            body, shipped,
+            "nothing about the guard is kept anywhere, so what goes back has to come out of the \
+             game's own bytes every time"
         );
     }
 
-    #[tokio::test]
-    async fn reading_a_guarded_game_a_second_time_still_knows_how_to_put_the_guard_back() {
-        let held = sandbox();
-        let store = sandbox();
-        let root = held.path();
+    #[test]
+    fn a_file_the_game_never_guarded_passes_through_both_ways_untouched() {
+        let shipped = fixture::game("A Title", "", "MS Gothic");
+        let at = Path::new("/game/Data/BasicData/Game.dat");
 
-        let basic = root.join(source::DATA).join(source::BASIC);
-        fs::create_dir_all(&basic).unwrap();
+        let mut body = opened(shipped.clone(), at).expect("it opens");
+        assert_eq!(body, shipped);
 
-        let mut shipped: Vec<u8> = (0..200usize).map(|one| (one * 7 % 251) as u8).collect();
-        shipped[1] = 0x50;
-        shipped[5] = 0x57;
-        fs::write(basic.join("DataBase.dat"), &shipped).unwrap();
+        sealed(&shipped, at, &mut body).expect("it seals back");
+        assert_eq!(body, shipped);
+    }
 
-        let quiet = Quiet;
-        let source_dir = store.path().join("source");
-        let at = Prepare::over(root, &source_dir, store.path()).heard_by(&quiet);
+    #[test]
+    fn a_pro_guarded_game_dat_is_opened_and_sealed_back_out_of_its_own_bytes_alone() {
+        let at = Path::new("/game/Data/BasicData/Game.dat");
+        let plain = fixture::game("A Title", " + DLC", "MS Gothic");
 
-        assert_eq!(lifted(&at, root).await.expect("the guard lifts"), 1);
+        for scolding in [
+            b"".as_slice(),
+            b"Extracting data violates the guidelines.\0".as_slice(),
+        ] {
+            let shipped = unprot::as_shipped(&plain, scolding, unprot::Kind::Game);
 
-        let spot = kept_for(store.path(), root, &basic.join("DataBase.dat"));
-        let kept = fs::read(&spot).expect("what was kept");
-        assert!(!kept.is_empty(), "the guard that came off has to be kept");
+            let mut body = opened(shipped.clone(), at).expect("it opens");
+            assert_eq!(
+                body, plain,
+                "Game.dat is the one kind whose own size has to be written fresh when the \
+                 hundred and forty three byte head comes off"
+            );
+
+            sealed(&shipped, at, &mut body).expect("it seals back");
+            assert_eq!(
+                body, shipped,
+                "the guard is kept nowhere, so sealing it back has to work the whole encryption \
+                 out of the game's own bytes again"
+            );
+        }
+    }
+
+    #[test]
+    fn an_older_game_dat_behind_a_scolding_is_opened_far_enough_to_be_refused_by_name() {
+        let mut shipped = b"Extracting data violates the guidelines.\0".to_vec();
+        shipped.extend_from_slice(&[0x00, 0x57, 0x00, 0x00, 0x4F, 0x4C, 0x00, 0x46, 0x4D, 0x00]);
+        shipped.extend([0u8; 40]);
+
+        let body = opened(shipped, Path::new("/game/Data/BasicData/Game.dat")).expect("it opens");
 
         assert_eq!(
-            lifted(&at, root).await.expect("reading the game again"),
-            0,
-            "the file on disk has already let go of its guard"
+            game::read(&body).err(),
+            Some("convert the game with Wolf RPG Editor 3".to_string()),
+            "the scolding has to come off a Wolf 2 game as well, or the reader is told it handed \
+             over something that is not a Wolf game at all instead of what to do about it"
         );
+    }
+
+    fn a_plan() -> Vec<u8> {
+        fixture::database(&[fixture::Type {
+            name: "\u{30a2}\u{30a4}\u{30c6}\u{30e0}",
+            fields: &["\u{540d}\u{524d}"],
+            words: &[0],
+            entries: &[&["\u{7dd1}\u{8336}"]],
+            named_by: None,
+        }])
+        .0
+    }
+
+    #[test]
+    fn a_plan_the_game_scrambled_is_handed_back_in_the_clear() {
+        let plan = a_plan();
+
+        let mut hidden = plan.clone();
+        unprot::unplanned(&mut hidden);
+        assert_ne!(hidden, plan);
 
         assert_eq!(
-            fs::read(&spot).expect("what is kept now"),
-            kept,
-            "reading the game again may not forget the guard, or the only copy of it is gone and \
-             the game is handed data files it will not open"
+            opened(hidden, Path::new("/game/Data/BasicData/DataBase.project")),
+            Ok(plan),
+            "a Pro game scrambles the plan beside its database, and without the plan the database \
+             is a wall of numbers nobody can name"
         );
+    }
+
+    #[test]
+    fn a_map_that_would_scramble_into_a_plan_is_still_handed_straight_back() {
+        let mut raw = a_plan();
+        unprot::unplanned(&mut raw);
+
+        let at = Path::new("/game/Data/MapData/Dungeon.mps");
+
+        assert_eq!(
+            opened(raw.clone(), at),
+            Ok(raw.clone()),
+            "which wrapping a file carries is read off its name and never sniffed out of its \
+             bytes, or the first map that happens to scramble into something that parses comes \
+             back rewritten"
+        );
+
+        let mut body = raw.clone();
+        assert_eq!(sealed(&raw, at, &mut body), Ok(()));
+        assert_eq!(body, raw);
     }
 }

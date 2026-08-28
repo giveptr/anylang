@@ -1,12 +1,15 @@
 use crate::engine::wolf_rpg::held::Held;
 use crate::engine::wolf_rpg::reached::Reached;
 use crate::engine::wolf_rpg::source::{File, Which};
-use crate::engine::wolf_rpg::{archive, common, database, game, harvest, map, script, source};
+use crate::engine::wolf_rpg::{
+    archive, common, database, game, guard, harvest, map, script, source,
+};
 use crate::{backup, walk};
 use anyhow::{Context, Result};
+use std::borrow::Cow;
 use std::path::Path;
 
-pub async fn held_by(store: &Path, game_dir: &Path, at: &Path) -> Result<Vec<u8>> {
+async fn shipped(store: &Path, game_dir: &Path, at: &Path) -> Result<Vec<u8>> {
     match at.starts_with(game_dir) {
         true => backup::original(store, game_dir, at).await,
         false => tokio::fs::read(at)
@@ -15,15 +18,42 @@ pub async fn held_by(store: &Path, game_dir: &Path, at: &Path) -> Result<Vec<u8>
     }
 }
 
+fn called(at: &Path) -> Cow<'_, str> {
+    at.file_name().unwrap_or_default().to_string_lossy()
+}
+
+pub async fn sealed(
+    store: &Path,
+    game_dir: &Path,
+    at: &Path,
+    mut body: Vec<u8>,
+) -> Result<Vec<u8>> {
+    if !guard::wraps(at) {
+        return Ok(body);
+    }
+
+    let raw = shipped(store, game_dir, at).await?;
+
+    guard::sealed(&raw, at, &mut body).map_err(|why| anyhow::anyhow!("{}: {why}", called(at)))?;
+
+    Ok(body)
+}
+
+pub async fn opened(store: &Path, game_dir: &Path, at: &Path) -> Result<Vec<u8>> {
+    let raw = shipped(store, game_dir, at).await?;
+
+    guard::opened(raw, at).map_err(|why| anyhow::anyhow!("{}: {why}", called(at)))
+}
+
 pub async fn read(store: &Path, game_dir: &Path, one: &File) -> Result<Held> {
-    let raw = held_by(store, game_dir, &one.at).await?;
+    let raw = opened(store, game_dir, &one.at).await?;
 
     let held = match &one.which {
         Which::Map => map::read(&raw),
         Which::Script => script::read(&raw),
         Which::Common => common::read(&raw),
         Which::Game => game::read(&raw),
-        Which::Database { plan } => paired(&raw, &held_by(store, game_dir, plan).await?),
+        Which::Database { plan } => paired(&raw, &opened(store, game_dir, plan).await?),
     };
 
     held.map_err(|why| anyhow::anyhow!("{} could not be read: {why}", one.named))
@@ -44,7 +74,7 @@ fn parted(stem: &str, out: &mut Reached) {
     }
 }
 
-fn shipped(game_dir: &Path, root: &Path, out: &mut Reached) {
+fn stems(game_dir: &Path, root: &Path, out: &mut Reached) {
     let weighed = source::weight(game_dir);
 
     for one in source::archives(game_dir) {
@@ -75,7 +105,7 @@ pub async fn looked_up(store: &Path, game_dir: &Path, root: &Path) -> Reached {
 
     let mut out = tokio::task::spawn_blocking(move || {
         let mut out = Reached::new();
-        shipped(&here, &over, &mut out);
+        stems(&here, &over, &mut out);
 
         out
     })

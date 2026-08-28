@@ -2,10 +2,10 @@ use crate::backup;
 use crate::engine::wolf_rpg::held::Held;
 use crate::engine::wolf_rpg::reached::Reached;
 use crate::engine::wolf_rpg::source::Which;
-use crate::engine::wolf_rpg::{archive, fonts, guard, harvest, held, pictures, reading, source};
+use crate::engine::wolf_rpg::{archive, fonts, harvest, held, pictures, reading, source};
 use crate::engine::{Install, sheet};
 use crate::scope::slashed;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::future::BoxFuture;
 use std::collections::BTreeMap;
 use std::fs;
@@ -70,7 +70,6 @@ fn agreed(
 
 struct Making<'a> {
     at: &'a Install<'a>,
-    root: &'a Path,
     reached: &'a Reached,
     agreed: &'a harvest::Agreed,
 }
@@ -85,7 +84,6 @@ async fn rebuilt(
 ) -> Result<Option<Vec<u8>>> {
     let Making {
         at,
-        root,
         reached,
         agreed,
     } = making;
@@ -108,10 +106,12 @@ async fn rebuilt(
         return Ok(None);
     }
 
-    let mut body = held::wrapped(&read.held, edits)
+    let body = held::wrapped(&read.held, edits)
         .map_err(|why| anyhow::anyhow!("{} could not be written: {why}", one.named))?;
 
-    guard::again(at, root, one, &mut body).await?;
+    let body = reading::sealed(at.store, at.game_dir, &one.at, body)
+        .await
+        .with_context(|| format!("{} could not be guarded again", one.named))?;
 
     Ok(Some(body))
 }
@@ -299,7 +299,6 @@ pub fn run(at: Install<'_>) -> BoxFuture<'_, Result<()>> {
             let agreed = agreed(&files, &read, &said);
             let making = Making {
                 at: &at,
-                root: &root,
                 reached: &reached,
                 agreed: &agreed,
             };
@@ -414,7 +413,7 @@ mod tests {
     use crate::engine::fonts::Fonts;
     use crate::engine::pictures::Pictures;
     use crate::engine::wolf_rpg::fixture::{self, a_jpeg, dotted, sandbox};
-    use crate::engine::wolf_rpg::{map, prepare};
+    use crate::engine::wolf_rpg::{game, map, prepare};
     use crate::engine::{Prepare, Swap};
     use crate::progress::{Heard, Quiet};
 
@@ -811,6 +810,88 @@ mod tests {
             fs::read(&map).expect("the map"),
             shipped,
             "with nothing staged the game gets its own words back, byte for byte"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scolded_game_is_never_written_to_by_a_read_and_still_gives_up_its_own_words_after() {
+        let at = sandbox();
+        let root = at.path();
+        let store = sandbox();
+        let source_dir = store.path().join("source");
+        let staged = store.path().join("staged");
+        fixture::lay_out(root);
+
+        let game_dat = root.join(source::DATA).join(source::BASIC).join("Game.dat");
+        let mut scolded = b"Extracting data violates the guidelines.\0".to_vec();
+        scolded.extend(fs::read(&game_dat).unwrap());
+        fs::write(&game_dat, &scolded).unwrap();
+
+        let quiet = Quiet;
+        let fonts = Fonts::default();
+        let read = async || {
+            prepare::run(
+                "Wolf RPG",
+                Prepare::over(root, &source_dir, store.path()).heard_by(&quiet),
+            )
+            .await
+            .expect("the game is read");
+
+            let page = fs::read_to_string(source_dir.join("BasicData").join("Game.dat.sheet"))
+                .expect("the sheet");
+
+            sheet::lines(&page)
+                .expect("its lines")
+                .get("title/s0")
+                .cloned()
+                .expect("the title")
+        };
+
+        assert_eq!(read().await, "\u{9060}\u{3044}\u{9053}");
+        assert_eq!(
+            fs::read(&game_dat).unwrap(),
+            scolded,
+            "the guard comes off in memory, so reading a game leaves every byte of it where the \
+             game put it and Restore original files still has something true to give back"
+        );
+
+        let landing = staged.join("BasicData");
+        fs::create_dir_all(&landing).unwrap();
+        fs::write(
+            landing.join("Game.dat.sheet"),
+            sheet::write([("title/s0".to_string(), "The Long Road Home".to_string())])
+                .expect("a sheet"),
+        )
+        .unwrap();
+
+        run(Install::over(root, &staged, store.path())
+            .sending(&fonts)
+            .heard_by(&quiet))
+        .await
+        .expect("the translation goes in");
+
+        let after = fs::read(&game_dat).unwrap();
+        let past = b"Extracting data violates the guidelines.\0".len();
+        assert!(
+            after.starts_with(b"Extracting data violates the guidelines.\0"),
+            "the game reads its own scolding, so what is written back has to wear it again"
+        );
+        assert_eq!(
+            game::read(&after[past..])
+                .expect("the game can still read it")
+                .pieces[0]
+                .said[0]
+                .text,
+            "The Long Road Home",
+            "the size Game.dat carries is counted from past the scolding, so a title that grew \
+             has to leave a file the engine still opens"
+        );
+
+        assert_eq!(
+            read().await,
+            "\u{9060}\u{3044}\u{9053}",
+            "reading the game a second time has to hand back the words the game shipped, not the \
+             translation just written into it"
         );
     }
 

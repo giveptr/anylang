@@ -277,18 +277,25 @@ pub fn repacked(plain: &[u8], head: usize) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+fn alike(found: &[u8], magic: &[u8], utf8_at: usize) -> bool {
+    found
+        .iter()
+        .zip(magic)
+        .enumerate()
+        .all(|(which, (found, wanted))| which == utf8_at || found == wanted)
+}
+
+pub fn opens(magic: &[u8], utf8_at: usize, raw: &[u8], from: usize) -> bool {
+    raw.get(from..from + magic.len())
+        .is_some_and(|found| alike(found, magic, utf8_at))
+}
+
 pub fn spelled(magic: &[u8], utf8_at: usize, raw: &[u8], from: usize) -> Result<(), String> {
     let found = raw
         .get(from..from + magic.len())
         .ok_or("this file is too short to say what it is")?;
 
-    let same = found
-        .iter()
-        .zip(magic)
-        .enumerate()
-        .all(|(which, (found, wanted))| which == utf8_at || found == wanted);
-
-    if !same {
+    if !alike(found, magic, utf8_at) {
         return Err("this is not a Wolf RPG file of the kind its name says".to_string());
     }
 

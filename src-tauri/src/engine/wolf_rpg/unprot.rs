@@ -125,6 +125,20 @@ fn scolding(body: &[u8]) -> Option<usize> {
     }
 }
 
+fn spells(body: &[u8], kind: Kind) -> bool {
+    let spell = kind.spell();
+    let mark = spell
+        .iter()
+        .position(|one| *one == coder::UTF8_MARK)
+        .expect("every spell carries the UTF-8 mark");
+
+    coder::opens(&spell, mark, body, 0)
+}
+
+fn past_scolding(body: &[u8], kind: Kind) -> Option<usize> {
+    scolding(body).filter(|past| guarded(&body[*past..]) || spells(&body[*past..], kind))
+}
+
 fn restamp(body: &mut [u8], was: usize, fresh: u32) -> Result<(), String> {
     let mut at = BODY_AT;
 
@@ -151,10 +165,6 @@ fn restamp(body: &mut [u8], was: usize, fresh: u32) -> Result<(), String> {
     Ok(())
 }
 
-pub fn wanted(body: &[u8]) -> bool {
-    guarded(body) || scolding(body).is_some_and(|past| guarded(&body[past..]))
-}
-
 fn spanned(body: &[u8], span: usize) -> usize {
     let mut rolls = keying::Rolling::from(u32::from(body[KEY_AT]));
 
@@ -165,25 +175,33 @@ fn spanned(body: &[u8], span: usize) -> usize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Guard {
-    decoy: Vec<u8>,
+struct Pro {
     head: Vec<u8>,
     seed: [u8; KEY_LEN],
     once: [u8; ONCE_LEN],
-    span: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Guard {
+    scolding: Vec<u8>,
+    pro: Option<Pro>,
 }
 
 pub fn freed(body: &mut Vec<u8>, kind: Kind) -> Result<Guard, String> {
-    let decoy = match guarded(body) {
+    let scolding: Vec<u8> = match guarded(body) {
         true => Vec::new(),
-        false => {
-            let past = scolding(body)
-                .filter(|past| guarded(&body[*past..]))
-                .ok_or("this file carries no Wolf RPG Pro guard to lift")?;
-
-            body.drain(..past).collect()
-        }
+        false => match past_scolding(body, kind) {
+            Some(past) => body.drain(..past).collect(),
+            None => Vec::new(),
+        },
     };
+
+    if !guarded(body) {
+        return Ok(Guard {
+            scolding,
+            pro: None,
+        });
+    }
 
     let was = body.len();
 
@@ -213,68 +231,18 @@ pub fn freed(body: &mut Vec<u8>, kind: Kind) -> Result<Guard, String> {
     }
 
     Ok(Guard {
-        decoy,
-        head,
-        seed,
-        once,
-        span,
+        scolding,
+        pro: Some(Pro { head, seed, once }),
     })
 }
 
-impl Guard {
-    pub fn packed(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-
-        for part in [&self.decoy, &self.head] {
-            out.extend_from_slice(&(part.len() as u32).to_le_bytes());
-            out.extend_from_slice(part);
-        }
-
-        out.extend_from_slice(&self.seed);
-        out.extend_from_slice(&self.once);
-        out.extend_from_slice(&(self.span as u32).to_le_bytes());
-
-        out
-    }
-
-    pub fn unpacked(raw: &[u8]) -> Result<Self, String> {
-        let mut at = 0;
-        let mut taken = Vec::new();
-
-        for _ in 0..2 {
-            let len = coder::word_at(raw, at)? as usize;
-            at += 4;
-            taken.push(
-                raw.get(at..at + len)
-                    .ok_or("this guard stops before the bytes it names")?
-                    .to_vec(),
-            );
-            at += len;
-        }
-
-        let seed: [u8; KEY_LEN] = raw
-            .get(at..at + KEY_LEN)
-            .and_then(|held| held.try_into().ok())
-            .ok_or("this guard holds no key")?;
-        at += KEY_LEN;
-
-        let once: [u8; ONCE_LEN] = raw
-            .get(at..at + ONCE_LEN)
-            .and_then(|held| held.try_into().ok())
-            .ok_or("this guard holds no nonce")?;
-        at += ONCE_LEN;
-
-        Ok(Self {
-            head: taken.pop().expect("two parts"),
-            decoy: taken.pop().expect("two parts"),
-            seed,
-            once,
-            span: coder::word_at(raw, at)? as usize,
-        })
-    }
-}
-
 pub fn reguarded(body: &mut Vec<u8>, kind: Kind, kept: &Guard) -> Result<(), String> {
+    let Some(pro) = &kept.pro else {
+        body.splice(0..0, kept.scolding.iter().copied());
+
+        return Ok(());
+    };
+
     let plain = body.len();
 
     if body.len() < kind.spell().len() {
@@ -282,11 +250,11 @@ pub fn reguarded(body: &mut Vec<u8>, kind: Kind, kept: &Guard) -> Result<(), Str
     }
 
     if kind == Kind::Game {
-        let fresh = (plain - kind.spell().len() + kept.head.len() - 1) as u32;
+        let fresh = (plain - kind.spell().len() + pro.head.len() - 1) as u32;
         restamp(body, plain, fresh)?;
     }
 
-    body.splice(..kind.spell().len(), kept.head.iter().copied());
+    body.splice(..kind.spell().len(), pro.head.iter().copied());
 
     let span = body
         .len()
@@ -294,18 +262,47 @@ pub fn reguarded(body: &mut Vec<u8>, kind: Kind, kept: &Guard) -> Result<(), Str
         .ok_or_else(|| "this file is too short to carry the guard it came with".to_string())?;
     let span = spanned(body, span);
 
-    aes::counted(&mut body[DATA_AT..DATA_AT + span], &kept.seed, &kept.once);
+    aes::counted(&mut body[DATA_AT..DATA_AT + span], &pro.seed, &pro.once);
 
     unmask(body, kind.seeds());
-    body.splice(0..0, kept.decoy.iter().copied());
+    body.splice(0..0, kept.scolding.iter().copied());
 
     Ok(())
 }
 
 #[cfg(test)]
+pub fn as_shipped(plain: &[u8], scolding: &[u8], kind: Kind) -> Vec<u8> {
+    let mut head: Vec<u8> = (0..GUARD).map(|one| (one * 7 % 251) as u8).collect();
+    head[GUARDED_AT] = GUARDED;
+    head[NEWEST_AT] = NEWEST;
+
+    let spelled = sha::letters(&salted(&head, kind));
+    let letters = spelled.as_bytes();
+
+    let kept = Guard {
+        scolding: scolding.to_vec(),
+        pro: Some(Pro {
+            head,
+            seed: letters[KEY_AT..KEY_AT + KEY_LEN]
+                .try_into()
+                .expect("sixteen letters"),
+            once: letters[ONCE_AT..ONCE_AT + ONCE_LEN]
+                .try_into()
+                .expect("sixteen letters"),
+        }),
+    };
+
+    let mut body = plain.to_vec();
+    reguarded(&mut body, kind, &kept).expect("a file the game would ship");
+
+    body
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::wolf_rpg::fixture;
+    use crate::engine::wolf_rpg::{fixture, game, harvest, held};
+    use std::collections::BTreeMap;
 
     fn guarded_like(len: usize) -> Vec<u8> {
         let mut out: Vec<u8> = (0..len).map(|one| (one * 7 % 251) as u8).collect();
@@ -318,16 +315,14 @@ mod tests {
     #[test]
     fn a_file_let_go_of_its_guard_and_given_it_back_is_the_file_the_game_shipped() {
         for kind in [Kind::Common, Kind::Database, Kind::TileSet] {
-            for decoy in ["", "Extracting data violates the guidelines."] {
-                let mut shipped = decoy.as_bytes().to_vec();
-                if !decoy.is_empty() {
+            for scolding in ["", "Extracting data violates the guidelines."] {
+                let mut shipped = scolding.as_bytes().to_vec();
+                if !scolding.is_empty() {
                     shipped.push(0);
                 }
                 shipped.extend(guarded_like(GUARD + 60));
 
                 let mut body = shipped.clone();
-                assert!(wanted(&body), "this is the shape a guarded file arrives in");
-
                 let kept = freed(&mut body, kind).expect("the guard lifts");
                 assert!(
                     body.starts_with(&kind.spell()),
@@ -347,6 +342,84 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_is_scolded_but_never_guarded_still_has_the_scolding_taken_off_and_put_back() {
+        for kind in [Kind::Game, Kind::Common, Kind::Database, Kind::TileSet] {
+            let mut shipped =
+                b"Extracting data from encrypted files violates the guidelines.\0".to_vec();
+            let past = shipped.len();
+            shipped.extend_from_slice(&kind.spell());
+            shipped.extend((0..200usize).map(|one| (one * 3 % 251) as u8));
+
+            let mut body = shipped.clone();
+            let kept = freed(&mut body, kind).expect("the scolding comes off");
+
+            assert_eq!(
+                body,
+                shipped[past..],
+                "the engine writes this scolding in front of a file it left unencrypted, and \
+                 every reader after it would see the words where the magic belongs"
+            );
+
+            reguarded(&mut body, kind, &kept).expect("the scolding goes back on");
+            assert_eq!(
+                body, shipped,
+                "the game reads what it shipped, so a file nothing was done to has to go back \
+                 wearing the same words it came with"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_neither_scolded_nor_guarded_is_left_where_it_stands() {
+        for kind in [Kind::Game, Kind::Common, Kind::Database, Kind::TileSet] {
+            let mut body = kind.spell().to_vec();
+            body.extend((0..200usize).map(|one| (one * 3 % 251) as u8));
+            let shipped = body.clone();
+
+            let kept = freed(&mut body, kind).expect("there is nothing to lift");
+            assert_eq!(
+                body, shipped,
+                "a Wolf file opens on a nul, and taking that for the end of a scolding would eat \
+                 the first byte of every game that was never guarded at all"
+            );
+
+            reguarded(&mut body, kind, &kept).expect("and nothing goes back on");
+            assert_eq!(body, shipped);
+        }
+    }
+
+    #[test]
+    fn a_scolded_game_dat_that_grew_carries_the_size_the_translation_left_in_it() {
+        let mut shipped = b"Extracting data violates the guidelines.\0".to_vec();
+        let past = shipped.len();
+        shipped.extend_from_slice(&fixture::game("Short", "", "MS Gothic"));
+
+        let mut body = shipped.clone();
+        let kept = freed(&mut body, Kind::Game).expect("the scolding comes off");
+
+        let read = game::read(&body).expect("Game.dat");
+        let said = BTreeMap::from([("title/s0".to_string(), "A Rather Longer Title".to_string())]);
+        let edits = harvest::changed(
+            &read,
+            &harvest::sift(&read.pieces, &Default::default()),
+            &said,
+            &Default::default(),
+            &Default::default(),
+        );
+        let mut grown = held::wrapped(&read, edits).expect("a whole Game.dat");
+
+        reguarded(&mut grown, Kind::Game, &kept).expect("the scolding goes back on");
+
+        assert_eq!(&grown[..past], &shipped[..past]);
+        assert_eq!(
+            game::read(&grown[past..]).expect("it still reads").pieces[0].said[0].text,
+            "A Rather Longer Title",
+            "the engine reads this file's own size from past the scolding, so a title that grew \
+             has to leave that number true with the scolding back in front of it"
+        );
+    }
+
+    #[test]
     fn a_guarded_file_that_grew_is_still_guarded_when_it_goes_back_in() {
         let mut body = guarded_like(GUARD + 60);
         let kept = freed(&mut body, Kind::Database).expect("the guard lifts");
@@ -355,7 +428,7 @@ mod tests {
         reguarded(&mut body, Kind::Database, &kept).expect("the guard goes back on");
 
         assert!(
-            wanted(&body),
+            guarded(&body),
             "a translation makes the file longer, and the engine still has to see a guarded file \
              at the other end"
         );
@@ -374,42 +447,5 @@ mod tests {
             "the engine reads this number to know how far the file goes, so a size that is not \
              there is a layout this reader must not write into"
         );
-    }
-
-    #[test]
-    fn a_guard_written_beside_a_file_reads_back_the_way_it_was_kept() {
-        let kept = Guard {
-            decoy: b"Extracting data...".to_vec(),
-            head: (0..GUARD as u8).collect(),
-            seed: [7; KEY_LEN],
-            once: [9; ONCE_LEN],
-            span: 261,
-        };
-
-        assert_eq!(
-            Guard::unpacked(&kept.packed()),
-            Ok(kept),
-            "the guard is all that lets a written file go back looking the way it came, so it \
-             has to survive the trip through the store"
-        );
-    }
-
-    #[test]
-    fn a_guard_cut_short_is_refused_rather_than_read_askew() {
-        let whole = Guard {
-            decoy: Vec::new(),
-            head: vec![1, 2, 3],
-            seed: [0; KEY_LEN],
-            once: [0; ONCE_LEN],
-            span: 8,
-        }
-        .packed();
-
-        for cut in [0, 4, whole.len() - 1] {
-            assert!(
-                Guard::unpacked(&whole[..cut]).is_err(),
-                "a guard missing its last bytes would put the file back wrong"
-            );
-        }
     }
 }
