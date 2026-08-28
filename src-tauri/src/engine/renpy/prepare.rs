@@ -3,7 +3,7 @@ use crate::engine::renpy::python::{Interpreter, find_interpreter};
 use crate::engine::renpy::switch::switch_file;
 use crate::engine::renpy::{
     ARCHIVES, ENGINE_DIR, GAME_DIR, LIB_DIR, PICTURES, READING, SCRIPTS, STEPS, TEXT, TL_DIR,
-    WORKING, archive, chosen, compiled, has_ext, names, pictures, shipped,
+    WORKING, archive, chosen, compiled, has_ext, names, parameterized, pictures, shipped,
 };
 use crate::engine::{Prepare, fonts as face};
 use crate::hash::{Rolling, xxh3};
@@ -88,7 +88,23 @@ pub async fn run(at: Prepare<'_>) -> Result<()> {
 
     at.progress.stage(&plan, stage_of(&plan, TEXT));
     extract_source(&python, at.game_dir, at.source, at.progress).await?;
-    add_names(at.game_dir, at.source, at.progress).await?;
+    added(
+        at.game_dir,
+        at.source,
+        at.progress,
+        names::add,
+        "character name(s) the game never offered for translation",
+    )
+    .await?;
+    added(
+        at.game_dir,
+        at.source,
+        at.progress,
+        parameterized::add,
+        "line(s) the game draws outside its dialogue box and never offered for \
+         translation",
+    )
+    .await?;
 
     let name = chosen(at.tweaks);
     if !name.is_empty() {
@@ -117,16 +133,19 @@ fn planned(opening: bool, recovering: bool) -> Vec<&'static str> {
         .collect()
 }
 
-async fn add_names(game_dir: &Path, source: &Path, progress: &dyn Progress) -> Result<()> {
+async fn added(
+    game_dir: &Path,
+    source: &Path,
+    progress: &dyn Progress,
+    add: fn(&Path, &Path) -> Result<u32>,
+    what: &str,
+) -> Result<()> {
     let here = game_dir.to_path_buf();
     let into = source.to_path_buf();
 
-    let added = tokio::task::spawn_blocking(move || names::add(&into, &here)).await??;
-    if added > 0 {
-        progress.info(
-            Source::Prepare,
-            &format!("{added} character name(s) the game never offered for translation"),
-        );
+    let count = tokio::task::spawn_blocking(move || add(&into, &here)).await??;
+    if count > 0 {
+        progress.info(Source::Prepare, &format!("{count} {what}"));
     }
 
     Ok(())

@@ -2,6 +2,7 @@ mod archive;
 mod compiled;
 mod fonts;
 mod names;
+mod parameterized;
 mod pictures;
 mod prepare;
 mod python;
