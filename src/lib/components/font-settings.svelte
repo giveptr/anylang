@@ -104,7 +104,7 @@
               <PathTail path={one.at || one.name} />
             </span>
             {#if one.builtin}
-              <span class="shrink-0 text-[11px] text-ink-faint">shipped</span>
+              <span class="shrink-0 text-[11px] text-ink-faint">engine</span>
             {/if}
           </div>
           {#if face && drawn(face)}
