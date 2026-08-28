@@ -93,23 +93,16 @@ fn parted(stem: &str, out: &mut Reached) {
 
 fn stems(game_dir: &Path, root: &Path, out: &mut Reached) {
     let weighed = source::weight(game_dir);
+    let inside = source::archives(game_dir)
+        .into_iter()
+        .filter_map(move |one| {
+            let key = archive::key_for(&one, weighed).ok().flatten()?;
 
-    for one in source::archives(game_dir) {
-        let Ok(Some(key)) = archive::key_for(&one, weighed) else {
-            continue;
-        };
-        let Ok(named) = archive::named_inside(&one, &key) else {
-            continue;
-        };
+            archive::named_inside(&one, &key).ok()
+        })
+        .flatten();
 
-        for held in named {
-            if let Some(stem) = Path::new(&held).file_stem().and_then(|one| one.to_str()) {
-                parted(stem, out);
-            }
-        }
-    }
-
-    for at in walk::files_now(root) {
+    for at in walk::files_now(root).into_iter().chain(inside) {
         if let Some(stem) = at.file_stem().and_then(|one| one.to_str()) {
             parted(stem, out);
         }
