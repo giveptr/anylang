@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 pub const MARKUP_RULES: &str = r"- control codes led by a backslash, e.g. \c[6] \f[20] \v[12] \cself[3] \cdb[0:12:8] \s[5] \font[2] \sp[1] \E \> \^ \.
 - ruby, written \r[base,reading]: leave both halves exactly as they are
 - tags in angle brackets, e.g. <C> <L> <R>
-- language markers in square brackets, e.g. [ENG]: the marker itself, never the words after it
+- language markers in square brackets, e.g. [ENG]: the marker itself; the words after it are ordinary text
 - a row that opens with @ is an engine order, e.g. @1 or @pg wait \cself[10]: copy the whole row through unchanged";
 
 pub const SHAPE_RULES: &str = "- Most items are a whole message box, with its rows separated by \
