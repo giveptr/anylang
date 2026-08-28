@@ -1,6 +1,6 @@
 use crate::canvas::Canvas;
 use crate::engine::wolf_rpg::coder::{self, line, repacked};
-use crate::engine::wolf_rpg::{event, game, source};
+use crate::engine::wolf_rpg::{archive, event, game, keying, source};
 use std::fs;
 use std::io::Cursor;
 use std::path::Path;
@@ -404,6 +404,14 @@ pub fn told_by(told: u32, title: &str, plus: &str, fonts: &[&str]) -> Vec<u8> {
 
     let whole = (out.len() - 1) as u32;
     coder::put_word(&mut out, size, whole).expect("room for the size");
+
+    out
+}
+
+pub fn older_archive() -> Vec<u8> {
+    let mut out = vec![0; keying::HEAD_LEN as usize];
+    out[..2].copy_from_slice(&archive::MARK.to_le_bytes());
+    out[2..4].copy_from_slice(&6u16.to_le_bytes());
 
     out
 }

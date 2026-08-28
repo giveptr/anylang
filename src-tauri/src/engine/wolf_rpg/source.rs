@@ -1,4 +1,4 @@
-use crate::engine::wolf_rpg::{common, database, game, map, script};
+use crate::engine::wolf_rpg::{archive, common, database, game, map, script};
 use crate::scope::slashed;
 use crate::walk;
 use std::fs;
@@ -10,13 +10,13 @@ pub const BASIC: &str = "BasicData";
 const SHIPPED_PLAN: &str = "SysDataBaseBasic";
 pub const UNPACKED: &str = "unpacked";
 
+const OWN: &str = "wolf";
 const ARCHIVES: [&str; 8] = [
-    "wolf", "data", "pak", "bin", "assets", "content", "res", "resource",
+    OWN, "data", "pak", "bin", "assets", "content", "res", "resource",
 ];
 pub const SEAL: &str = "wolfx";
 const SEALED: [&str; 1] = [SEAL];
 const CARRIERS: [&str; 5] = ["Game", "List", "Data2", "GameFile", "BasicData2"];
-const RUNNERS: [&str; 2] = ["Game.exe", "GamePro.exe"];
 const DEEP: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,10 +86,6 @@ pub fn archive_of(taken: &[PathBuf], root: &Path, at: &Path) -> Option<PathBuf> 
         .cloned()
 }
 
-fn looks_like_wolf(game_dir: &Path) -> bool {
-    game_dir.join(DATA).is_dir() || RUNNERS.iter().any(|named| game_dir.join(named).is_file())
-}
-
 fn suffixed_by(at: &Path, known: &[&str]) -> bool {
     at.extension()
         .is_some_and(|kind| known.iter().any(|one| kind.eq_ignore_ascii_case(one)))
@@ -113,13 +109,48 @@ fn shallow(game_dir: &Path) -> impl Iterator<Item = PathBuf> {
         .map(walkdir::DirEntry::into_path)
 }
 
+fn at_hand(game_dir: &Path) -> impl Iterator<Item = PathBuf> {
+    let data = game_dir.join(DATA);
+
+    [game_dir.to_path_buf(), data]
+        .into_iter()
+        .filter_map(|at| fs::read_dir(at).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|one| one.path())
+        .filter(|at| at.is_file())
+}
+
+fn named_as_archive(at: &Path) -> bool {
+    suffixed_by(at, &ARCHIVES) && !carries(at)
+}
+
+fn opens_as_wolf(at: &Path) -> bool {
+    named_as_archive(at) && archive::marked(at).unwrap_or(false)
+}
+
 fn packed(game_dir: &Path) -> bool {
-    looks_like_wolf(game_dir)
-        && shallow(game_dir).any(|at| suffixed_by(&at, &ARCHIVES) || suffixed_by(&at, &SEALED))
+    at_hand(game_dir).any(|at| opens_as_wolf(&at))
+}
+
+pub fn refused(game_dir: &Path) -> Option<String> {
+    at_hand(game_dir)
+        .filter(|at| suffixed(at, OWN) && !carries(at))
+        .find_map(|at| match archive::marked(&at) {
+            Ok(true) => None,
+            Ok(false) => Some((at, archive::UNMARKED.to_string())),
+            Err(why) => Some((at, why)),
+        })
+        .map(|(at, why)| {
+            format!(
+                "{}: {why}",
+                at.file_name().unwrap_or_default().to_string_lossy()
+            )
+        })
 }
 
 fn carrier(game_dir: &Path) -> Option<PathBuf> {
-    shallow(game_dir).find(|at| carries(at) && suffixed_by(at, &ARCHIVES))
+    at_hand(game_dir).find(|at| carries(at) && suffixed_by(at, &ARCHIVES))
 }
 
 pub fn weight(game_dir: &Path) -> Option<u32> {
@@ -129,9 +160,8 @@ pub fn weight(game_dir: &Path) -> Option<u32> {
 }
 
 pub fn archives(game_dir: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = shallow(game_dir)
-        .filter(|at| suffixed_by(at, &ARCHIVES))
-        .filter(|at| !carries(at))
+    let mut found: Vec<PathBuf> = at_hand(game_dir)
+        .filter(|at| named_as_archive(at))
         .collect();
 
     found.sort();
@@ -333,7 +363,11 @@ mod tests {
         let at = sandbox();
         let root = at.path();
         fs::create_dir_all(root.join(DATA)).unwrap();
-        fs::write(root.join(DATA).join("BasicData.wolf"), [0; 16]).unwrap();
+        fs::write(
+            root.join(DATA).join("BasicData.wolf"),
+            fixture::older_archive(),
+        )
+        .unwrap();
 
         assert!(
             holds_a_game(root),
@@ -357,19 +391,60 @@ mod tests {
     }
 
     #[test]
-    fn an_archive_in_a_game_no_wolf_exe_runs_is_not_reason_enough_to_claim_it() {
+    fn a_file_that_does_not_open_like_a_wolf_archive_is_not_reason_enough_to_claim_a_game() {
         let at = sandbox();
         let root = at.path();
-        fs::create_dir_all(root.join("Bundles")).unwrap();
-        fs::write(root.join("Bundles").join("extra.wolf"), [0; 16]).unwrap();
+        for named in ["resources.pak", "natives_blob.bin", "app.data"] {
+            fs::write(root.join(named), [0; 16]).unwrap();
+        }
+        fs::write(root.join("Game.exe"), [0; 4]).unwrap();
 
         assert!(
             !holds_a_game(root),
-            "another engine may ship a file of that name, and claiming it would take the game \
-             away from the reader who could actually translate it"
+            "another engine lays files under every one of these suffixes beside its own runner, \
+             and a wolf exe is a name anybody can type: claiming it would take the game away \
+             from the reader who could actually translate it"
+        );
+        assert!(
+            refused(root).is_none(),
+            "and none of those suffixes is Wolf's own, so the reader hears nothing about Wolf \
+             RPG for a game that was never one"
         );
 
-        fs::write(root.join("Game.exe"), [0; 4]).unwrap();
-        assert!(holds_a_game(root));
+        fs::write(root.join("Broken.wolf"), [0; 16]).unwrap();
+        assert!(
+            refused(root).is_some_and(|why| why.starts_with("Broken.wolf")),
+            "a file under Wolf's own suffix that opens like no archive at all is named out loud, \
+             or a game whose download stopped short is turned away as no game anybody makes"
+        );
+        fs::remove_file(root.join("Broken.wolf")).unwrap();
+
+        fs::remove_file(root.join("Game.exe")).unwrap();
+        fs::write(root.join("LongRoadHome.exe"), [0; 4]).unwrap();
+        fs::write(root.join("Data.wolf"), fixture::older_archive()).unwrap();
+
+        assert!(
+            holds_a_game(root),
+            "the archive says for itself what it is, so a game whose runner was renamed is still \
+             a game this reader can tell the truth about"
+        );
+    }
+
+    #[test]
+    fn a_folder_a_game_was_unpacked_into_is_not_the_game_itself() {
+        let at = sandbox();
+        let root = at.path();
+        let game = root.join("LongRoadHome");
+        fs::create_dir_all(&game).unwrap();
+        fs::create_dir_all(root.join(DATA)).unwrap();
+        fs::write(game.join("Data.wolf"), fixture::older_archive()).unwrap();
+
+        assert!(holds_a_game(&game));
+        assert!(
+            !holds_a_game(root),
+            "a wolf game keeps its archives beside the runner or in its own Data folder, and \
+             claiming the folder above one would lay every font and picture this app writes out \
+             of the reach of the game that has to read them"
+        );
     }
 }

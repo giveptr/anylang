@@ -2,7 +2,7 @@ use std::ops::Range;
 
 pub const UTF8_MARK: u8 = 0x55;
 
-const OLDER_EDITOR: &str = "convert the game with Wolf RPG Editor 3";
+pub const OLDER_EDITOR: &str = "convert the game with Wolf RPG Editor 3";
 
 fn read(raw: &[u8]) -> Result<String, String> {
     let raw = match raw.split_last() {

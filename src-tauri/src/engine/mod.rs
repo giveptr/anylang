@@ -362,7 +362,7 @@ pub fn detect(dir: &Path) -> Option<Box<dyn Engine>> {
 }
 
 pub fn refused(dir: &Path) -> Option<String> {
-    rpg_maker::refused(dir)
+    rpg_maker::refused(dir).or_else(|| wolf_rpg::refused(dir))
 }
 
 pub fn forget() {

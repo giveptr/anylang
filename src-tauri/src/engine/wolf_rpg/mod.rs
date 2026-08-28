@@ -43,6 +43,10 @@ pub fn detect(dir: &Path) -> Option<Box<dyn Engine>> {
     source::holds_a_game(dir).then(|| Box::new(WolfRpg) as Box<dyn Engine>)
 }
 
+pub fn refused(dir: &Path) -> Option<String> {
+    source::refused(dir)
+}
+
 impl Engine for WolfRpg {
     fn label(&self) -> &str {
         "Wolf RPG"
@@ -467,7 +471,11 @@ mod tests {
         let root = at.path();
         let store = sandbox();
         fs::create_dir_all(root.join("Data")).unwrap();
-        fs::write(root.join("Data").join("BasicData.wolf"), [0; 16]).unwrap();
+        fs::write(
+            root.join("Data").join("BasicData.wolf"),
+            fixture::older_archive(),
+        )
+        .unwrap();
 
         let engine = detect(root).expect("a wolf game, archive and all");
         let quiet = Quiet;

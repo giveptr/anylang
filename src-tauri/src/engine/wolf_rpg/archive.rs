@@ -5,7 +5,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::mem;
 use std::path::{Path, PathBuf};
 
-const MARK: u16 = 0x5844;
+pub const MARK: u16 = 0x5844;
+pub const UNMARKED: &str = "this file does not open like a Wolf RPG archive";
 const NEWEST: u16 = 8;
 const NO_KEY: u32 = 0x1;
 const NO_HEAD_PRESS: u32 = 0x2;
@@ -37,13 +38,15 @@ struct Head {
 impl Head {
     fn read(body: &[u8]) -> Result<Self, String> {
         if coder::half_at(body, 0)? != MARK {
-            return Err("this file does not open like a Wolf RPG archive".to_string());
+            return Err(UNMARKED.to_string());
         }
 
         let version = coder::half_at(body, 2)?;
         if version != NEWEST {
             return Err(format!(
-                "this archive is version {version} and only {NEWEST} comes from the newer editor"
+                "this reader opens the version {NEWEST} archive Wolf RPG Editor 3 writes and \
+                 this one is version {version}, so {}",
+                coder::OLDER_EDITOR
             ));
         }
 
@@ -454,6 +457,15 @@ fn walked(
 pub struct Laid {
     pub at: PathBuf,
     pub body: Vec<u8>,
+}
+
+pub fn marked(at: &Path) -> Result<bool, String> {
+    let mut spool = Spool::over(at)?;
+
+    Ok(spool
+        .at(0, 2)
+        .and_then(|head| coder::half_at(&head, 0))
+        .is_ok_and(|found| found == MARK))
 }
 
 pub fn key_for(at: &Path, weight: Option<u32>) -> Result<Option<Vec<u8>>, String> {
@@ -1445,16 +1457,24 @@ mod tests {
     }
 
     #[test]
-    fn an_archive_from_the_older_editor_says_so_rather_than_reading_wrong() {
-        let mut head = vec![0u8; keying::HEAD_LEN as usize];
-        head[..2].copy_from_slice(&MARK.to_le_bytes());
-        head[2..4].copy_from_slice(&6u16.to_le_bytes());
+    fn an_archive_of_any_version_but_ours_is_turned_away_and_told_what_would_open_it() {
+        for version in [6u16, 9] {
+            let mut head = vec![0u8; keying::HEAD_LEN as usize];
+            head[..2].copy_from_slice(&MARK.to_le_bytes());
+            head[2..4].copy_from_slice(&version.to_le_bytes());
 
-        assert_eq!(
-            Head::read(&head).err(),
-            Some("this archive is version 6 and only 8 comes from the newer editor".to_string()),
-            "an archive from the older editor is turned away by the version it carries"
-        );
+            assert_eq!(
+                Head::read(&head).err(),
+                Some(format!(
+                    "this reader opens the version 8 archive Wolf RPG Editor 3 writes and this \
+                     one is version {version}, so {}",
+                    coder::OLDER_EDITOR
+                )),
+                "an archive is turned away by the version it carries, and whichever side of \
+                 ours it falls on, laying it out in Wolf RPG Editor 3 is what would get the \
+                 game read"
+            );
+        }
     }
 
     const WOLF_THREE: [u16; 4] = [
