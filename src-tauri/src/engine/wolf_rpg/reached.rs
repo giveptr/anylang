@@ -4,6 +4,8 @@ use std::collections::BTreeSet;
 pub struct Reached {
     coded: BTreeSet<String>,
     parts: BTreeSet<String>,
+    named: BTreeSet<String>,
+    longest: usize,
     apart: BTreeSet<u32>,
     handed: BTreeSet<String>,
 }
@@ -30,6 +32,15 @@ impl Reached {
             .range(token.to_string()..)
             .take_while(|one| one.starts_with(token))
             .any(|one| one[token.len()..].chars().all(|held| held.is_ascii_digit()))
+    }
+
+    pub fn keeps(&mut self, name: &str) {
+        self.longest = self.longest.max(name.len());
+        self.named.insert(name.to_ascii_lowercase());
+    }
+
+    pub fn kept(&self, name: &str) -> bool {
+        name.len() <= self.longest && self.named.contains(&name.to_ascii_lowercase())
     }
 
     pub fn takes_apart(&mut self, which: u32) {

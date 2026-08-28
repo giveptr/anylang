@@ -104,6 +104,7 @@ fn stems(game_dir: &Path, root: &Path, out: &mut Reached) {
 
     for at in walk::files_now(root).into_iter().chain(inside) {
         if let Some(stem) = at.file_stem().and_then(|one| one.to_str()) {
+            out.keeps(stem);
             parted(stem, out);
         }
     }
@@ -159,6 +160,25 @@ mod tests {
         assert!(
             !out.builds("hu-x"),
             "a row that no shipped picture is named after is a row a player reads"
+        );
+    }
+
+    #[test]
+    fn the_whole_name_of_a_shipped_file_is_kept_beside_the_parts_a_key_is_glued_from() {
+        let mut out = Reached::new();
+        let stem = "chara_hu-n1";
+        out.keeps(stem);
+        parted(stem, &mut out);
+
+        assert!(
+            out.kept("Chara_Hu-N1"),
+            "a game reads its own pictures off a case-blind disk, so a row spelled any other \
+             way still reaches the same file"
+        );
+        assert!(
+            !out.kept("hu-n"),
+            "the tail a key is glued from is not a file, and only what the game ships under a \
+             name of its own may stand in for one"
         );
     }
 

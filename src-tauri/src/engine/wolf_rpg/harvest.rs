@@ -84,6 +84,25 @@ fn tabled(text: &str) -> bool {
         })
 }
 
+const FOLDERS: [char; 2] = ['/', '\\'];
+
+fn under_a_folder(part: &str) -> Option<&str> {
+    part.rsplit_once(FOLDERS).map(|(_, tail)| tail)
+}
+
+fn shipped_names(text: &str, reached: &Reached) -> bool {
+    let mut parts = text
+        .split(APART)
+        .map(str::trim)
+        .filter(|one| !one.is_empty())
+        .peekable();
+
+    parts.peek().is_some()
+        && parts.all(|one| {
+            reached.kept(one) || under_a_folder(one).is_some_and(|tail| reached.kept(tail))
+        })
+}
+
 fn suffix_only(text: &str) -> bool {
     let held = text.trim();
 
@@ -98,12 +117,12 @@ fn for_the_engine(text: &str) -> bool {
 }
 
 impl Care {
-    fn held_back(self, text: &str) -> bool {
+    fn held_back(self, whole: &str, shown: &str, reached: &Reached) -> bool {
         match self {
             Self::Shown => false,
             Self::Called | Self::Kept => true,
             Self::Label | Self::Compared | Self::Names | Self::NamedBy | Self::Plain => {
-                for_the_engine(text)
+                for_the_engine(whole) || shipped_names(shown, reached)
             }
         }
     }
@@ -175,7 +194,10 @@ pub fn sift(pieces: &[Piece], reached: &Reached) -> Vec<Slot> {
             let offer = match care {
                 Care::Called => Offer::Locked,
                 _ => Offer::default().or_listed(
-                    asked.is_none() || care.held_back(&said.text) || names_a_file(shown) || keyed,
+                    asked.is_none()
+                        || care.held_back(&said.text, shown, reached)
+                        || names_a_file(shown)
+                        || keyed,
                 ),
             };
 
@@ -447,6 +469,75 @@ mod tests {
                  of settings however short its parts are"
             );
         }
+    }
+
+    #[test]
+    fn a_row_of_names_the_game_glues_a_folder_and_a_suffix_onto_is_never_asked_about() {
+        let safe = "\u{5b89}\u{5168}";
+        let unknown = "\u{4e0d}\u{660e}";
+        let gained = "\u{7d4c}\u{9a13}\u{5024}";
+        let risen = "\u{4f53}\u{529b}\u{4e0a}\u{6607}";
+
+        let mut reached = Reached::new();
+        for one in [safe, unknown, gained, risen] {
+            reached.keeps(one);
+        }
+
+        for said in [
+            format!("{safe},"),
+            format!("{unknown},"),
+            format!("{gained},{risen},"),
+        ] {
+            let row = command(SET_STRING, &[], &[&said]);
+            assert!(
+                sift(slice::from_ref(&row), &reached)[0].offer != Offer::Asked,
+                "{said:?} is glued into a picture path a folder and a suffix at a time, and a \
+                 word in place of any part of it leaves the game looking for a file it never \
+                 shipped"
+            );
+
+            let value = Piece {
+                spot: "t25/d7/f8".to_string(),
+                kind: Kind::Value,
+                said: vec![Said {
+                    text: said.clone(),
+                    at: 0..16,
+                }],
+            };
+            assert!(
+                sift(&[value], &reached)[0].offer != Offer::Asked,
+                "and the database column the same row is typed into is where a game keeps a \
+                 hundred of them"
+            );
+        }
+
+        let alone = command(SET_STRING, &[], &[gained]);
+        assert!(
+            sift(slice::from_ref(&alone), &reached)[0].offer != Offer::Asked,
+            "a word standing on its own is held back the same way: a name the game ships a file \
+             under costs a picture the game can no longer find, and a word held back is still \
+             shown and still settled by hand"
+        );
+
+        let plain = command(SET_STRING, &[], &["\u{9060}\u{3044}\u{9053}"]);
+        assert!(
+            sift(slice::from_ref(&plain), &reached)[0].offer.asked(),
+            "and a word the game ships nothing under is a word a player reads"
+        );
+
+        let under = command(SET_STRING, &[], &[&format!("CharaChip/{gained}")]);
+        assert!(
+            sift(slice::from_ref(&under), &reached)[0].offer != Offer::Asked,
+            "a row that carries its own folder and waits only on a suffix reaches the same file, \
+             so the folder in front of it may not hide the name behind it"
+        );
+
+        let drawn = command(MESSAGE, &[], &[gained]);
+        assert!(
+            sift(slice::from_ref(&drawn), &reached)[0].offer.asked(),
+            "a box draws the word it holds and never looks a file up by it, so the same spelling \
+             in a message is asked about as plainly as any other line"
+        );
     }
 
     #[test]
