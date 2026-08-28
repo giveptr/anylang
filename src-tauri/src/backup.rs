@@ -403,6 +403,10 @@ async fn is_dir(at: &Path) -> bool {
 }
 
 pub async fn taken_over(root: &Path, game_dir: &Path, at: &Path) -> Result<bool> {
+    if !at.starts_with(game_dir) {
+        return Ok(false);
+    }
+
     let kept = under(root, SHIPPED, game_dir, at)?;
 
     if is_dir(&kept).await || !is_dir(at).await {
@@ -413,6 +417,10 @@ pub async fn taken_over(root: &Path, game_dir: &Path, at: &Path) -> Result<bool>
 }
 
 pub async fn handed_back(root: &Path, game_dir: &Path, at: &Path) -> Result<bool> {
+    if !at.starts_with(game_dir) {
+        return Ok(false);
+    }
+
     let kept = under(root, SHIPPED, game_dir, at)?;
 
     if !is_dir(&kept).await {
@@ -472,6 +480,27 @@ mod tests {
             root,
             file,
         }
+    }
+
+    #[tokio::test]
+    async fn a_landing_that_is_not_in_the_game_holds_nothing_the_game_shipped() {
+        let sandbox = tempfile::tempdir().expect("a temp folder");
+        let game = sandbox.path().join("game");
+        let root = sandbox.path().join("store");
+        let staged = root.join("staged").join("vietnamese");
+
+        write(&staged.join("Map001.json.sheet"), "what the reader wrote").await;
+
+        assert!(
+            !taken_over(&root, &game, &staged).await.unwrap(),
+            "an engine that stages its work in the store hands that folder in here, and a folder \
+             outside the game can never be one the game shipped"
+        );
+        assert!(
+            !handed_back(&root, &game, &staged).await.unwrap(),
+            "there is no folder out here for the game to have shipped, so asking has to answer \
+             that rather than fail and take the whole of Restore original files down with it"
+        );
     }
 
     #[tokio::test]
