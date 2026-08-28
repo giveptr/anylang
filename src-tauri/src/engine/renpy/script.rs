@@ -138,6 +138,7 @@ struct Origin {
     line: usize,
     text: String,
     span: Option<(usize, usize)>,
+    key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +172,7 @@ fn scan(lines: &[String]) -> Extraction {
                     line: index,
                     text,
                     span: Some((from, to)),
+                    key: None,
                 });
             }
             ParsedLine::Old { text } => {
@@ -180,12 +182,16 @@ fn scan(lines: &[String]) -> Extraction {
                     .then(|| sources.pop_back())
                     .flatten();
 
-                sources.clear();
-                sources.push_back(above.unwrap_or(Origin {
+                let mut from = above.unwrap_or_else(|| Origin {
                     line: index,
-                    text,
+                    text: text.clone(),
                     span: None,
-                }));
+                    key: None,
+                });
+                from.key = Some(text);
+
+                sources.clear();
+                sources.push_back(from);
             }
             ParsedLine::Aside => {
                 sources.pop_front();
@@ -216,17 +222,16 @@ fn scan(lines: &[String]) -> Extraction {
                     line: index,
                     text: text.clone(),
                     span: None,
+                    key: None,
                 });
 
                 if !is_translatable(&from.text) {
                     continue;
                 }
 
-                let spot = match from.span.is_none() && from.line != index {
-                    true => Spot::Key {
-                        text: from.text.clone(),
-                    },
-                    false => Spot::Line {
+                let spot = match &from.key {
+                    Some(key) => Spot::Key { text: key.clone() },
+                    None => Spot::Line {
                         block: block.clone(),
                         at,
                     },

@@ -220,6 +220,42 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_this_app_wrote_reads_back_as_a_shipped_translation_like_any_other() {
+        let ours = concat!(
+            "translate japanese cap_arr_13ae5179:\n",
+            "\n",
+            "    # mia \"The door is locked.\"\n",
+            "    mia \"扉は閉まっている。\"\n",
+            "\n",
+            "translate japanese strings:\n",
+            "\n",
+            "    # game/cap_arr.rpy:122\n",
+            "    # \"Back\"\n",
+            "    old \"Назад\"\n",
+            "    new \"戻る\"\n",
+        );
+
+        let done = overlaid(SKELETON, ours);
+        let written = done
+            .text
+            .expect("both lines were offered in the folder we wrote");
+
+        assert_eq!(
+            (done.taken, done.kept),
+            (2, 0),
+            "a reader who threw the project away and dropped the game again has the folder this \
+             app installed and nothing else: reading it back has to recover every line, or the \
+             work is paid for twice"
+        );
+        assert_eq!(
+            sources_of(&written),
+            ["扉は閉まっている。", "戻る"],
+            "the comment this app wrote over the line is its own note, not the words to hand on: \
+             what the game plays is what the next pass translates from"
+        );
+    }
+
+    #[test]
     fn a_line_the_shipped_folder_never_translated_keeps_the_words_the_game_shipped() {
         let done = overlaid(
             SKELETON,
