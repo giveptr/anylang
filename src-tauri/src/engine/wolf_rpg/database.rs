@@ -16,7 +16,7 @@ const NAMED_TYPE: u32 = 0x0001_D4C0;
 const SAID_FROM: u32 = 0x07D0;
 
 pub const SYSTEM: &str = "SysDatabase";
-const MAP_SETTINGS: usize = 0;
+const MAPS: usize = 0;
 
 pub struct Counted {
     pub named: String,
@@ -40,7 +40,7 @@ pub fn plan(raw: &[u8]) -> Result<Vec<Counted>, String> {
 
 pub fn places(raw: &[u8], plan: &[Counted]) -> Result<Held, String> {
     let counted = plan
-        .get(MAP_SETTINGS)
+        .get(MAPS)
         .ok_or_else(|| "this plan names no types at all".to_string())?;
 
     let pieces = counted
@@ -48,7 +48,7 @@ pub fn places(raw: &[u8], plan: &[Counted]) -> Result<Held, String> {
         .iter()
         .enumerate()
         .map(|(which, said)| Piece {
-            spot: format!("t{MAP_SETTINGS}/d{which}"),
+            spot: format!("t{MAPS}/d{which}"),
             kind: Kind::Value,
             said: vec![said.clone()],
         })
