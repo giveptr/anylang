@@ -195,10 +195,13 @@ impl Js<'_> {
         };
 
         let spot = at.index(index).key("parameters").index(0);
-        found.push(Found::plain(
-            line[said.clone()].to_string(),
-            Slot::Inside(spot, said, Fix::Token),
-        ));
+        let text = line[said.clone()].to_string();
+        let slot = Slot::Inside(spot, said, Fix::Token);
+
+        found.push(match talkative(&text) {
+            true => Found::plain(text, slot),
+            false => Found::doubted(text, slot),
+        });
     }
 
     fn plugin(&self, command: &Value, index: usize, at: &Spot, found: &mut Vec<Found>) {
@@ -259,21 +262,54 @@ fn setting(token: &str) -> bool {
     token.is_empty() || token.parse::<f64>().is_ok_and(f64::is_finite)
 }
 
+fn shouted(token: &str) -> bool {
+    token.len() > 1
+        && token
+            .chars()
+            .all(|one| one.is_ascii_alphanumeric() || one == '_')
+        && token.chars().any(char::is_uppercase)
+        && !token.chars().any(char::is_lowercase)
+}
+
+const SPOKEN: [char; 8] = ['.', ',', '!', '?', ';', ':', '\'', '"'];
+
+fn talkative(said: &str) -> bool {
+    let bare = text::unmarked(said);
+
+    bare != said
+        || bare
+            .chars()
+            .any(|one| one.is_alphabetic() && !one.is_ascii())
+}
+
+fn readable(said: &str) -> bool {
+    talkative(said)
+        || said.split(' ').filter(|word| !word.is_empty()).count() > 2
+        || said.chars().any(|one| SPOKEN.contains(&one))
+}
+
 fn argument(line: &str, words: &Vocabulary) -> Option<Range<usize>> {
     let tokens = tokens_of(line);
     let args = tokens.get(1..)?;
 
+    let declared = |token: &str| setting(token) || words.identifier(token);
+    let spelled = |token: &str| declared(token) || shouted(token);
+    let said = |at: &Range<usize>| &line[at.clone()];
+
     let mut first = 0;
-    while first < args.len() {
-        let token = &line[args[first].clone()];
-        if !setting(token) && !words.identifier(token) {
-            break;
-        }
+    while first < args.len() && spelled(said(&args[first])) {
         first += 1;
     }
 
+    if first == args.len() {
+        first = 0;
+        while first < args.len() && declared(said(&args[first])) {
+            first += 1;
+        }
+    }
+
     let mut last = args.len();
-    while last > first && setting(&line[args[last - 1].clone()]) {
+    while last > first && setting(said(&args[last - 1])) {
         last -= 1;
     }
 
@@ -281,16 +317,22 @@ fn argument(line: &str, words: &Vocabulary) -> Option<Range<usize>> {
         return None;
     }
 
-    let names_something = |at: &Range<usize>| {
-        let token = &line[at.clone()];
-        setting(token) || words.identifier(token) || symbolic(token)
+    let span = args[first].start..args[last - 1].end;
+    let reads = readable(&line[span.clone()]);
+
+    let names_something = |token: &str| {
+        setting(token)
+            || symbolic(token)
+            || match reads {
+                true => words.identifier(token),
+                false => words.names(token),
+            }
     };
 
-    if args[first..last].iter().all(names_something) {
-        return None;
+    match args[first..last].iter().all(|at| names_something(said(at))) {
+        true => None,
+        false => Some(span),
     }
-
-    Some(args[first].start..args[last - 1].end)
 }
 
 fn one_token(translation: &str, source: &str) -> String {
@@ -946,6 +988,116 @@ mod tests {
             texts(&sheet),
             vec!["Reward: 100 spirit stones"],
             "one argument reading like a setting may not cut the sentence it opens"
+        );
+    }
+
+    #[test]
+    fn a_command_word_counts_however_the_event_spelled_it_and_wherever_it_was_declared() {
+        let at = sandbox();
+        put(
+            at.path(),
+            "js/plugins/Journal.js",
+            "if (line.match(/(\\d+)[ ]SHOW OBJECTIVE[ ](.*)/i)) { open(); }\n\
+             if (args[0].toLowerCase() === 'off') { hide(); }",
+        );
+
+        let scene = json!({ "one": [
+            { "code": 356, "indent": 0, "parameters": ["Quest 26 Show Objective 7"] },
+            { "code": 356, "indent": 0, "parameters": ["StealthMode Off"] },
+        ] });
+
+        assert!(
+            texts(&parse(&scene.to_string(), &Vocabulary::read(at.path()))).is_empty(),
+            "a plugin matches its command line with /../i or after lowering the case, so the case \
+             an event was typed in is never the case the plugin spelled, and a plugin writes as \
+             much of its grammar into a pattern as it does into a string it compares"
+        );
+    }
+
+    #[test]
+    fn a_call_that_reads_as_talk_is_never_thrown_away_as_settings() {
+        let sheet = knowing(
+            &["CHANGE", "DISABLED", "SHOW", "OBJECTIVE"],
+            json!({ "one": [
+                { "code": 356, "indent": 0, "parameters": ["Notify: \\c[18]Automatic change disabled"] },
+                { "code": 356, "indent": 0, "parameters": ["Quest 26 Show Objective 7"] },
+            ] }),
+        );
+
+        assert_eq!(
+            texts(&sheet),
+            vec!["\\c[18]Automatic change disabled"],
+            "reading the case loosely is how a plugin compares, but it is also how an ordinary \
+             word runs into a keyword some other plugin shipped, so on its own it may hold a line \
+             back and never throw one away. Show Objective carries nothing to read and goes, while \
+             a line that reads as talk is kept unless the game was seen to spell every word of it"
+        );
+    }
+
+    #[test]
+    fn a_known_word_at_the_head_of_a_sentence_is_not_trimmed_off_it() {
+        let sheet = knowing(
+            &["this", "cost"],
+            json!({ "one": [
+                { "code": 356, "indent": 0, "parameters": ["Notify: This cost you 20 energy."] },
+            ] }),
+        );
+
+        assert_eq!(
+            texts(&sheet),
+            vec!["This cost you 20 energy."],
+            "every common word is a keyword to some plugin somewhere, so trimming the head of a \
+             call may only match a word as it was written: reading the case loosely there cuts \
+             the opening words off a line and leaves them on the screen untranslated"
+        );
+    }
+
+    #[test]
+    fn a_plugin_argument_that_does_not_read_as_talk_is_listed_rather_than_asked() {
+        let sheet = knowing(
+            &["ADDRANKS"],
+            json!({ "one": [
+                { "code": 356, "indent": 0, "parameters": ["TALENT ADDRANKS 1 hunt 1"] },
+                { "code": 356, "indent": 0, "parameters": ["Notify: The plant is still growing."] },
+                { "code": 356, "indent": 0, "parameters": ["Notify: \\c[11]The plant is ripe."] },
+                { "code": 356, "indent": 0, "parameters": ["Notify: 実が熟した。"] },
+            ] }),
+        );
+
+        assert!(
+            listed(&sheet, "hunt"),
+            "no list of the game's own words holds a talent abbreviation, it lives in the plugin \
+             settings, so nothing can recognise it and a guess is all that is left"
+        );
+        assert!(
+            listed(&sheet, "The plant is still growing."),
+            "this reads like a sentence and almost certainly is one, but almost is not the bar: \
+             nothing here could not equally be a keyword grammar some plugin invented, and the \
+             cost of the two mistakes is not the same. A line held back is one the reader types \
+             out; a keyword sent off comes back as a word the plugin cannot find"
+        );
+
+        for certain in ["\\c[11]The plant is ripe.", "実が熟した。"] {
+            assert!(
+                !listed(&sheet, certain),
+                "a plugin compares its keywords as plain ascii and never writes a control code \
+                 into one, so a code or a letter outside ascii settles it and there is nothing \
+                 left to be unsure about: {certain:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_call_shouted_from_end_to_end_is_still_put_in_front_of_the_reader() {
+        let sheet = sheet(json!({ "one": [
+            { "code": 356, "indent": 0, "parameters": ["D_TEXT GAME OVER 36"] },
+        ] }));
+
+        assert!(
+            listed(&sheet, "GAME OVER"),
+            "capitals are a guess at a command word, not a word the game was seen to spell, so a \
+             call written in capitals from end to end has nothing left once the guess has eaten \
+             it: the reader has to keep seeing the line rather than have it vanish off the sheet"
         );
     }
 

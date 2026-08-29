@@ -38,6 +38,24 @@ static RE_LITERAL: LazyLock<Regex> = LazyLock::new(|| {
         .expect("RE_LITERAL is a valid pattern")
 });
 
+const COMPARED: &str = r"match|replace|search|split";
+const TRIED: &str = r"test|exec";
+const PATTERN: &str = r"(?:[^/\\\n\[]|\\.|\[(?:[^\]\\]|\\.)*\])+";
+const FLAGS: &str = r"[gimsuy]*";
+
+static RE_MATCHED: LazyLock<Regex> = LazyLock::new(|| {
+    let handed = format!(r"(?:{COMPARED})\s*\(\s*/({PATTERN})/{FLAGS}");
+    let receiver = format!(r"/({PATTERN})/{FLAGS}\s*\.\s*(?:{TRIED})\s*\(");
+
+    Regex::new(&format!("{handed}|{receiver}")).expect("every pattern here is a valid one")
+});
+
+static RE_CLASS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[(?:[^\]\\]|\\.)*\]").expect("RE_CLASS is a valid pattern"));
+
+static RE_SHOUTED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Z][A-Z0-9_]+").expect("RE_SHOUTED is a valid pattern"));
+
 static READ_ONCE: LazyLock<Mutex<HashMap<PathBuf, Arc<Vocabulary>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -113,6 +131,12 @@ impl Vocabulary {
         self.identifiers.contains(token)
     }
 
+    pub fn names(&self, token: &str) -> bool {
+        self.identifier(token)
+            || self.identifier(&token.to_lowercase())
+            || self.identifier(&token.to_uppercase())
+    }
+
     pub fn ships(&self, text: &str) -> bool {
         let bare = text.trim();
         let last = bare.rsplit(['/', '\\']).next().unwrap_or(bare);
@@ -153,6 +177,18 @@ impl Vocabulary {
             for found in RE_LITERAL.captures_iter(&source) {
                 if let Some(text) = found.get(1).or_else(|| found.get(2)) {
                     self.identifiers.insert(text.as_str().to_string());
+                }
+            }
+
+            for found in RE_MATCHED.captures_iter(&source) {
+                let Some(pattern) = found.get(1).or_else(|| found.get(2)) else {
+                    continue;
+                };
+
+                let bare = RE_CLASS.replace_all(pattern.as_str(), " ");
+
+                for word in RE_SHOUTED.find_iter(&bare) {
+                    self.identifiers.insert(word.as_str().to_string());
                 }
             }
         }
@@ -643,7 +679,8 @@ mod tests {
         put(
             root,
             "js/plugins/Saba_Tachie.js",
-            "case 'showName': $gameTemp.tachieName = args[1]; break;",
+            "case 'showName': $gameTemp.tachieName = args[1]; break;\n\
+             if (/^SHOW OBJECTIVE/i.test(line)) { open(); }",
         );
         put(
             root,
@@ -657,6 +694,11 @@ mod tests {
         assert!(
             words.identifier("showName"),
             "a plugin compares its own keywords, so they appear in its source"
+        );
+        assert!(
+            words.identifier("OBJECTIVE"),
+            "a plugin holds a regex up against the command line as often as it compares a string, \
+             and the test is written on the pattern rather than on the line it reads"
         );
         assert!(
             words.identifier("00intro_01"),
