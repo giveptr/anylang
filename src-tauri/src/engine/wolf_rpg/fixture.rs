@@ -235,6 +235,7 @@ pub struct Type<'a> {
     pub fields: &'a [&'a str],
     pub words: &'a [usize],
     pub entries: &'a [&'a [&'a str]],
+    pub rows: &'a [&'a str],
     pub named_by: Option<usize>,
 }
 
@@ -254,7 +255,7 @@ pub fn database(types: &[Type<'_>]) -> (Vec<u8>, Vec<u8>) {
 
         plan.extend(word(held.entries.len() as u32));
         for (which, row) in held.entries.iter().enumerate() {
-            match naming.and_then(|at| row.get(at)) {
+            match held.rows.get(which).or(naming.and_then(|at| row.get(at))) {
                 Some(name) => plan.extend(line(name)),
                 None => plan.extend(line(&format!("row{which}"))),
             }
@@ -453,8 +454,20 @@ pub fn lay_out(root: &Path) {
         fields: &["\u{540d}\u{524d}", "\u{5024}\u{6bb5}", "\u{8aac}\u{660e}"],
         words: &[0, 2],
         entries: &[&["\u{7dd1}\u{8336}", "HP\u{3092}30\u{56de}\u{5fa9}"]],
+        rows: &[],
         named_by: None,
     }]);
     fs::write(basic.join("DataBase.project"), plan).unwrap();
     fs::write(basic.join("DataBase.dat"), data_body).unwrap();
+
+    let (plan, data_body) = database(&[Type {
+        name: "\u{30de}\u{30c3}\u{30d7}\u{8a2d}\u{5b9a}",
+        fields: &["\u{540d}"],
+        words: &[0],
+        entries: &[&[" "]],
+        rows: &["\u{5357}\u{5730}\u{533a}"],
+        named_by: None,
+    }]);
+    fs::write(basic.join("SysDatabase.project"), plan).unwrap();
+    fs::write(basic.join("SysDatabase.dat"), data_body).unwrap();
 }

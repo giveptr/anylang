@@ -12,22 +12,27 @@ fn is_plan(at: &Path) -> bool {
         .is_some_and(|kind| kind.eq_ignore_ascii_case(database::PLAN))
 }
 
-fn replanned(raw: Vec<u8>) -> Vec<u8> {
-    if database::plan(&raw).is_ok() {
-        return raw;
+fn scrambled(raw: &[u8]) -> bool {
+    if database::plan(raw).is_ok() {
+        return false;
     }
 
-    let mut turned = raw.clone();
+    let mut turned = raw.to_vec();
     unprot::unplanned(&mut turned);
 
-    match database::plan(&turned).is_ok() {
-        true => turned,
-        false => raw,
+    database::plan(&turned).is_ok()
+}
+
+fn replanned(mut raw: Vec<u8>) -> Vec<u8> {
+    if scrambled(&raw) {
+        unprot::unplanned(&mut raw);
     }
+
+    raw
 }
 
 pub fn wraps(at: &Path) -> bool {
-    kind_of(at).is_some()
+    is_plan(at) || kind_of(at).is_some()
 }
 
 pub fn opened(raw: Vec<u8>, at: &Path) -> Result<Vec<u8>, String> {
@@ -46,6 +51,14 @@ pub fn opened(raw: Vec<u8>, at: &Path) -> Result<Vec<u8>, String> {
 }
 
 pub fn sealed(shipped: &[u8], at: &Path, body: &mut Vec<u8>) -> Result<(), String> {
+    if is_plan(at) {
+        if scrambled(shipped) {
+            unprot::unplanned(body);
+        }
+
+        return Ok(());
+    }
+
     let Some(kind) = kind_of(at) else {
         return Ok(());
     };
@@ -145,6 +158,7 @@ mod tests {
             fields: &["\u{540d}\u{524d}"],
             words: &[0],
             entries: &[&["\u{7dd1}\u{8336}"]],
+            rows: &[],
             named_by: None,
         }])
         .0
@@ -163,6 +177,38 @@ mod tests {
             Ok(plan),
             "a Pro game scrambles the plan beside its database, and without the plan the database \
              is a wall of numbers nobody can name"
+        );
+    }
+
+    #[test]
+    fn a_plan_the_game_scrambled_is_scrambled_again_before_it_goes_back_in() {
+        let plan = a_plan();
+
+        let mut hidden = plan.clone();
+        unprot::unplanned(&mut hidden);
+
+        let at = Path::new("/game/Data/BasicData/SysDatabase.project");
+        assert!(
+            wraps(at),
+            "the places a plan names are written back into it now, so a plan has to be handed \
+             the wrapping it came in"
+        );
+
+        let mut body = opened(hidden.clone(), at).expect("it opens");
+        sealed(&hidden, at, &mut body).expect("it seals back");
+
+        assert_eq!(
+            body, hidden,
+            "the game reads its own plan through the scrambling it wrote, so laying the plain \
+             bytes back where a scrambled file stood leaves it reading a wall of noise"
+        );
+
+        let mut body = opened(plan.clone(), at).expect("it opens");
+        sealed(&plan, at, &mut body).expect("it seals back");
+
+        assert_eq!(
+            body, plan,
+            "and a plan the game never scrambled is left exactly where it stands"
         );
     }
 

@@ -78,6 +78,10 @@ async fn read_by(
         Which::Map => map::read(&raw),
         Which::Script => script::read(&raw),
         Which::Common => common::read(&raw),
+        Which::Places => match plan {
+            Some(plan) => database::places(&raw, plan),
+            None => database::plan(&raw).and_then(|types| database::places(&raw, &types)),
+        },
         Which::Game => game::read(&raw),
         Which::Database { plan: at } => match plan {
             Some(plan) => database::read(&raw, plan),
@@ -123,11 +127,13 @@ fn stems(game_dir: &Path, root: &Path, out: &mut Reached) {
 }
 
 async fn planned(store: &Path, game_dir: &Path, one: &File) -> Option<Vec<database::Counted>> {
-    let Which::Database { plan } = &one.which else {
-        return None;
+    let at = match &one.which {
+        Which::Database { plan } => plan,
+        Which::Places => &one.at,
+        _ => return None,
     };
 
-    let raw = opened(store, game_dir, plan).await.ok()?;
+    let raw = opened(store, game_dir, at).await.ok()?;
 
     database::plan(&raw).ok()
 }
@@ -259,6 +265,7 @@ mod tests {
                 "\u{25a0}\u{6226}\u{95d8}",
                 "\u{3044}\u{3044}\u{3048}",
                 "\u{306f}\u{3044}",
+                "\u{5357}\u{5730}\u{533a}",
                 "\u{6249}\u{306f}\u{9589}\u{307e}\u{3063}\u{3066}\u{3044}\u{308b}",
                 "\u{7dd1}\u{8336}",
                 "\u{9060}\u{3044}\u{9053}",

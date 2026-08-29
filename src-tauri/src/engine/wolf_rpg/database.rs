@@ -15,10 +15,13 @@ const TYPE_MAGIC: [u8; 4] = [0xFE, 0xFF, 0xFF, 0xFF];
 const NAMED_TYPE: u32 = 0x0001_D4C0;
 const SAID_FROM: u32 = 0x07D0;
 
+pub const SYSTEM: &str = "SysDatabase";
+const MAP_SETTINGS: usize = 0;
+
 pub struct Counted {
     pub named: String,
     pub fields: Vec<String>,
-    pub entries: Vec<String>,
+    pub entries: Vec<Said>,
 }
 
 pub fn plan(raw: &[u8]) -> Result<Vec<Counted>, String> {
@@ -35,6 +38,29 @@ pub fn plan(raw: &[u8]) -> Result<Vec<Counted>, String> {
     Ok(types)
 }
 
+pub fn places(raw: &[u8], plan: &[Counted]) -> Result<Held, String> {
+    let counted = plan
+        .get(MAP_SETTINGS)
+        .ok_or_else(|| "this plan names no types at all".to_string())?;
+
+    let pieces = counted
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(which, said)| Piece {
+            spot: format!("t{MAP_SETTINGS}/d{which}"),
+            kind: Kind::Value,
+            said: vec![said.clone()],
+        })
+        .collect();
+
+    Ok(Held {
+        plain: raw.to_vec(),
+        shape: held::Shape::Plain,
+        pieces,
+    })
+}
+
 fn planned(reader: &mut Reader) -> Result<Counted, String> {
     let named = reader.said()?.0;
 
@@ -47,7 +73,8 @@ fn planned(reader: &mut Reader) -> Result<Counted, String> {
     let count = reader.count()?;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
-        entries.push(reader.said()?.0);
+        let (text, at) = reader.said()?;
+        entries.push(Said { text, at });
     }
 
     reader.past_said()?;
@@ -197,7 +224,7 @@ fn one(
     Ok(())
 }
 
-fn matching(rows: &[Vec<Piece>], entries: &[String], at: usize) -> usize {
+fn matching(rows: &[Vec<Piece>], entries: &[Said], at: usize) -> usize {
     let mut matched = 0;
 
     for (entry, row) in rows.iter().enumerate() {
@@ -210,7 +237,7 @@ fn matching(rows: &[Vec<Piece>], entries: &[String], at: usize) -> usize {
             continue;
         }
 
-        if said != name.trim() {
+        if said != name.text.trim() {
             return 0;
         }
 
@@ -220,7 +247,7 @@ fn matching(rows: &[Vec<Piece>], entries: &[String], at: usize) -> usize {
     matched
 }
 
-fn naming(rows: &[Vec<Piece>], entries: &[String]) -> Vec<usize> {
+fn naming(rows: &[Vec<Piece>], entries: &[Said]) -> Vec<usize> {
     let Some(first) = rows.first() else {
         return Vec::new();
     };
@@ -249,7 +276,64 @@ fn naming(rows: &[Vec<Piece>], entries: &[String]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::wolf_rpg::fixture;
+    use crate::engine::wolf_rpg::reached::Reached;
+    use crate::engine::wolf_rpg::{fixture, harvest};
+
+    #[test]
+    fn the_places_a_plan_names_its_maps_by_are_read_out_of_it_and_written_back_into_it() {
+        let south = "\u{5357}\u{5730}\u{533a}\u{30b3}\u{30f3}\u{30d3}\u{30cb}";
+        let park = "\u{4e2d}\u{592e}\u{516c}\u{5712}\u{5357}\u{9580}";
+
+        let (plan_raw, _) = fixture::database(&[fixture::Type {
+            name: "\u{30de}\u{30c3}\u{30d7}\u{8a2d}\u{5b9a}",
+            fields: &["\u{540d}"],
+            words: &[0],
+            entries: &[&[" "], &[" "]],
+            rows: &[south, park],
+            named_by: None,
+        }]);
+
+        let types = plan(&plan_raw).expect("a plan");
+        let held = places(&plan_raw, &types).expect("the places a plan names");
+
+        assert_eq!(
+            held.pieces
+                .iter()
+                .map(|one| (one.spot.as_str(), one.said[0].text.as_str()))
+                .collect::<Vec<_>>(),
+            [("t0/d0", south), ("t0/d1", park)],
+            "the banner a game raises over a map spells the name out of its plan and nowhere \
+             else, so a reader that never opens the plan leaves every place name behind"
+        );
+
+        let mut reached = Reached::new();
+        harvest::homes_in(&held.pieces, "BasicData/SysDatabase.project", &mut reached);
+
+        assert!(
+            !reached.a_name(south),
+            "a map is one label among thousands, so letting its name stand as the key for that \
+             spelling would take every line the game happens to spell the same way out of the \
+             reader's sight and slave it to whatever the map was called"
+        );
+
+        let edits = vec![(
+            held.pieces[0].said[0].at.clone(),
+            coder::line("South District Store"),
+        )];
+        let body = held::wrapped(&held, edits).expect("a plan written back");
+        let again = plan(&body).expect("a plan this reader can still take in");
+
+        assert_eq!(
+            (
+                again[0].entries[0].text.as_str(),
+                again[0].entries[1].text.as_str()
+            ),
+            ("South District Store", park),
+            "a place name is stored the length of it and then the letters, so laying a longer \
+             wording in has to move everything after it: the plan has to read back whole, with \
+             the name beside it untouched"
+        );
+    }
 
     #[test]
     fn every_written_field_of_every_entry_comes_out_under_the_field_it_belongs_to() {
@@ -261,6 +345,7 @@ mod tests {
                 &["Green Tea", "Heals 30 HP."],
                 &["Luxury Tea", "Heals 100 HP."],
             ],
+            rows: &[],
             named_by: None,
         }]);
 
@@ -304,6 +389,7 @@ mod tests {
             ],
             words: &[0, 1],
             entries: &[&[key, key], &[plus, key]],
+            rows: &[],
             named_by: Some(0),
         }]);
 
@@ -333,11 +419,12 @@ mod tests {
             fields: &["\u{30ad}\u{30e3}\u{30e9}\u{540d}"],
             words: &[0],
             entries: &[&["\u{30b5}\u{30ad}"], &[""], &["\u{30a2}\u{30ad}\u{30e9}"]],
+            rows: &[],
             named_by: Some(0),
         }]);
 
         let mut plan = plan(&plan_raw).expect("a plan");
-        plan[0].entries[1] = "\u{4ee5}\u{4e0b}\u{30b2}\u{30b9}\u{30c8}\u{67a0}".to_string();
+        plan[0].entries[1].text = "\u{4ee5}\u{4e0b}\u{30b2}\u{30b9}\u{30c8}\u{67a0}".to_string();
 
         let held = read(&data, &plan).expect("a database");
 
@@ -355,6 +442,7 @@ mod tests {
             fields: &["\u{30bb}\u{30ea}\u{30d5}"],
             words: &[0],
             entries: &[&["\u{304a}\u{306f}\u{306a}\u{3057}"], &["\u{3044}\u{3084}"]],
+            rows: &[],
             named_by: None,
         }]);
 
@@ -375,6 +463,7 @@ mod tests {
             fields: &["a"],
             words: &[0],
             entries: &[&["x"]],
+            rows: &[],
             named_by: None,
         }]);
 
@@ -382,7 +471,10 @@ mod tests {
         plan.push(Counted {
             named: "Two".to_string(),
             fields: vec!["a".to_string()],
-            entries: vec!["row0".to_string()],
+            entries: vec![Said {
+                text: "row0".to_string(),
+                at: 0..8,
+            }],
         });
 
         assert!(read(&data, &plan).is_err());

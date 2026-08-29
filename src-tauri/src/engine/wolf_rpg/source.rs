@@ -25,6 +25,7 @@ pub enum Which {
     Script,
     Common,
     Database { plan: PathBuf },
+    Places,
     Game,
 }
 
@@ -239,6 +240,14 @@ fn listed(game_dir: &Path) -> Vec<File> {
     };
     plans.sort();
 
+    let places = plans
+        .iter()
+        .find(|at| {
+            at.file_stem()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case(database::SYSTEM))
+        })
+        .cloned();
+
     for plan in plans {
         let at = plan.with_extension(database::SUFFIX);
         if found.iter().any(|taken| taken.at == at) {
@@ -247,6 +256,10 @@ fn listed(game_dir: &Path) -> Vec<File> {
         if at.is_file() {
             found.extend(named(&data, at, Which::Database { plan }));
         }
+    }
+
+    if let Some(places) = places {
+        found.extend(named(&data, places, Which::Places));
     }
 
     found.sort_by(|a, b| a.named.cmp(&b.named));
@@ -301,6 +314,8 @@ mod tests {
                 "BasicData/CommonEvent.dat",
                 "BasicData/DataBase.dat",
                 "BasicData/Game.dat",
+                "BasicData/SysDatabase.dat",
+                "BasicData/SysDatabase.project",
                 "MapData/Dungeon.mps",
             ],
             "the editor's own shipped database and the map tree hold nothing a player reads, and \

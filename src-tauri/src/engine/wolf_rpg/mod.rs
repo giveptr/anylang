@@ -269,6 +269,7 @@ mod tests {
                 "BasicData/CommonEvent.dat.sheet",
                 "BasicData/DataBase.dat.sheet",
                 "BasicData/Game.dat.sheet",
+                "BasicData/SysDatabase.project.sheet",
                 "MapData/Dungeon.mps.sheet",
             ],
             "each sheet sits where the file it came from sits"
@@ -299,10 +300,21 @@ mod tests {
         let items = sheet::lines(&items).expect("its lines");
         assert_eq!(items["t0/d0/f0/s0"], "\u{7dd1}\u{8336}");
 
+        let places = fs::read_to_string(source.join("BasicData/SysDatabase.project.sheet"))
+            .expect("the sheet of places the plan names");
+        let places = sheet::lines(&places).expect("its lines");
+        assert_eq!(places["t0/d0/s0"], "\u{5357}\u{5730}\u{533a}");
+
         fs::create_dir_all(staged.join("BasicData")).unwrap();
         fs::write(
             staged.join("BasicData").join("DataBase.dat.sheet"),
             sheet::write([("t0/d0/f0/s0".to_string(), "Green Tea".to_string())]).expect("a sheet"),
+        )
+        .unwrap();
+        fs::write(
+            staged.join("BasicData").join("SysDatabase.project.sheet"),
+            sheet::write([("t0/d0/s0".to_string(), "South District".to_string())])
+                .expect("a sheet"),
         )
         .unwrap();
 
@@ -319,6 +331,14 @@ mod tests {
         let plan = database::plan(&plan).expect("the plan reads");
         let read = database::read(&raw, &plan).expect("it still reads as a database");
         assert_eq!(read.pieces[0].said[0].text, "Green Tea");
+
+        let raw = fs::read(root.join("Data/BasicData/SysDatabase.project")).expect("the plan");
+        let read = database::plan(&raw).expect("the plan still reads whole");
+        assert_eq!(
+            read[0].entries[0].text, "South District",
+            "the name a map raises over itself is spelled in the plan and nowhere else, so a \
+             wording only reaches the player once it is written back into the plan itself"
+        );
     }
 
     #[tokio::test]
@@ -338,6 +358,7 @@ mod tests {
             fields: &["\u{540d}\u{524d}"],
             words: &[0],
             entries: &[&["\u{7dd1}\u{8336}"]],
+            rows: &[],
             named_by: None,
         }]);
         let basics = archive::archived(

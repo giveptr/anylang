@@ -465,6 +465,7 @@ mod tests {
                         fields: &["\u{540d}\u{524d}"],
                         words: &[0],
                         entries: &[&["\u{7dd1}\u{8336}"]],
+                        rows: &[],
                         named_by: None,
                     }]);
 
