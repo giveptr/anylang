@@ -1,6 +1,6 @@
 use crate::engine::wolf_rpg::coder::{self, Reader};
 use crate::engine::wolf_rpg::event;
-use crate::engine::wolf_rpg::held::{self, Held, Piece};
+use crate::engine::wolf_rpg::held::{self, Held, Kind, Piece, Said};
 
 pub const NAME: &str = "CommonEvent";
 
@@ -62,7 +62,13 @@ fn one(
     reader.word()?;
     reader.word()?;
     reader.skip(HEADER)?;
-    reader.past_said()?;
+
+    let (called, at) = reader.said()?;
+    pieces.push(Piece {
+        spot: format!("e{which}/name"),
+        kind: Kind::Called,
+        said: vec![Said { text: called, at }],
+    });
 
     event::commands(reader, v35, &format!("e{which}"), pieces)?;
 
@@ -82,7 +88,7 @@ fn one(
     reader.skip(MIDDLE)?;
     reader.past_saids(SLOTS)?;
 
-    reader.marker(NAMED, "the name a common event is called by")?;
+    reader.marker(NAMED, "the last settings of a common event")?;
     reader.past_said()?;
 
     let closing = reader.byte()?;
@@ -127,10 +133,14 @@ mod tests {
                 .map(|one| (one.spot.as_str(), one.said[0].text.as_str()))
                 .collect::<Vec<_>>(),
             [
+                ("e0/name", "\u{25a0}\u{6226}\u{95d8}"),
                 ("e0/c0", "\u{6249}\u{306f}\u{9589}\u{307e}\u{3063}\u{3066}"),
+                ("e1/name", "\u{25a0}\u{6226}\u{95d8}"),
+                ("e2/name", "\u{25a0}\u{6226}\u{95d8}"),
                 ("e2/c0", "Rest"),
             ],
-            "an event holding nothing to translate still counts, or every later number slips"
+            "an event holding nothing to translate still counts, or every later number slips, \
+             and the name each one is called by comes out beside its lines"
         );
         assert_eq!(held.shape, held::Shape::Plain);
     }
@@ -149,7 +159,12 @@ mod tests {
                 .iter()
                 .map(|one| (one.spot.as_str(), one.said[0].text.as_str()))
                 .collect::<Vec<_>>(),
-            [("e0/c0", "\u{306f}\u{3044}"), ("e1/c0", "Rest")],
+            [
+                ("e0/name", "\u{25a0}\u{6226}\u{95d8}"),
+                ("e0/c0", "\u{306f}\u{3044}"),
+                ("e1/name", "\u{25a0}\u{6226}\u{95d8}"),
+                ("e1/c0", "Rest"),
+            ],
             "this editor packs the file and writes a byte-counted tail on every command, and both \
              have to be read for the events after the first to land where they belong"
         );

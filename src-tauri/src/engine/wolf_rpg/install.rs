@@ -41,7 +41,7 @@ async fn read_each(
             reading::read(at.store, at.game_dir, one)
                 .await
                 .map(|held| Taken {
-                    slots: harvest::sift(&held.pieces, reached),
+                    slots: harvest::sift(&held.pieces, &one.named, reached),
                     held,
                 }),
         );
@@ -920,7 +920,7 @@ mod tests {
         fs::create_dir_all(&scripts).unwrap();
         fs::write(
             scripts.join("WIP.txt"),
-            [0x40, 0x6d, 0x65, 0x73, 0x20, 0x82, 0xa0],
+            [0x40, 0x6d, 0x65, 0x73, 0x20, 0x80, 0xff],
         )
         .unwrap();
 

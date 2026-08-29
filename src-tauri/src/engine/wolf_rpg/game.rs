@@ -152,7 +152,7 @@ mod tests {
 
         let edits = harvest::changed(
             &read,
-            &harvest::sift(&read.pieces, &Default::default()),
+            &harvest::sift(&read.pieces, "", &Default::default()),
             &said,
             &Default::default(),
             &Default::default(),

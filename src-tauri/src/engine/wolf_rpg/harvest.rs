@@ -22,14 +22,17 @@ pub struct Slot {
     pub at: Range<usize>,
     pub offer: Offer,
     pub apart: bool,
+    pub drawn: bool,
     pub matched: bool,
 }
 
 #[derive(Clone, Copy)]
 enum Care {
     Shown,
+    Chosen,
+    Handed,
     Label,
-    Kept,
+    Engine,
     Called,
     Names,
     NamedBy,
@@ -90,6 +93,10 @@ fn under_a_folder(part: &str) -> Option<&str> {
     part.rsplit_once(FOLDERS).map(|(_, tail)| tail)
 }
 
+fn a_shipped_name(one: &str, reached: &Reached) -> bool {
+    reached.kept(one) || reached.a_part(one)
+}
+
 fn shipped_names(text: &str, reached: &Reached) -> bool {
     let mut parts = text
         .split(APART)
@@ -99,7 +106,8 @@ fn shipped_names(text: &str, reached: &Reached) -> bool {
 
     parts.peek().is_some()
         && parts.all(|one| {
-            reached.kept(one) || under_a_folder(one).is_some_and(|tail| reached.kept(tail))
+            a_shipped_name(one, reached)
+                || under_a_folder(one).is_some_and(|tail| a_shipped_name(tail, reached))
         })
 }
 
@@ -117,14 +125,51 @@ fn for_the_engine(text: &str) -> bool {
 }
 
 impl Care {
-    fn held_back(self, whole: &str, shown: &str, reached: &Reached) -> bool {
+    fn locked(self) -> bool {
+        matches!(self, Self::Called | Self::Handed)
+    }
+
+    fn drawn(self) -> bool {
+        matches!(self, Self::Shown | Self::Chosen)
+    }
+
+    fn reads_a_name(self) -> bool {
+        self.keys() && self.rank().is_none()
+    }
+
+    fn anywhere(_: Care) -> bool {
+        true
+    }
+
+    fn homes(self) -> bool {
+        self.rank().is_some() || self.keys()
+    }
+
+    fn held_back(self, whole: &str, outside: bool, read_them_all: bool) -> bool {
         match self {
             Self::Shown => false,
-            Self::Called | Self::Kept => true,
-            Self::Label | Self::Compared | Self::Names | Self::NamedBy | Self::Plain => {
-                for_the_engine(whole) || shipped_names(shown, reached)
-            }
+            Self::Chosen => outside,
+            Self::Called | Self::Handed | Self::Engine => true,
+            Self::Label | Self::NamedBy => for_the_engine(whole) || outside || !read_them_all,
+            Self::Compared | Self::Names | Self::Plain => for_the_engine(whole) || outside,
         }
+    }
+
+    fn rank(self) -> Option<u8> {
+        match self {
+            Self::NamedBy => Some(0),
+            Self::Names => Some(1),
+            Self::Label => Some(2),
+            Self::Plain => Some(3),
+            _ => None,
+        }
+    }
+
+    fn keys(self) -> bool {
+        matches!(
+            self,
+            Self::Called | Self::Handed | Self::Engine | Self::Compared | Self::NamedBy
+        )
     }
 
     fn matched(self) -> bool {
@@ -143,24 +188,28 @@ fn draws_text(args: &[u32]) -> bool {
 fn care_of(piece: &Piece, which: usize) -> Option<Care> {
     match &piece.kind {
         Kind::Font => None,
+        Kind::Called => Some(Care::Called),
+        Kind::Handed => Some(Care::Handed),
         Kind::Title => Some(Care::Shown),
         Kind::Value => Some(Care::Plain),
         Kind::Naming => Some(Care::NamedBy),
         Kind::Command { code, args } => Some(match (*code, which) {
-            (MESSAGE | CHOICES | PICKED | PROMPT, _) => Care::Shown,
+            (MESSAGE, _) => Care::Shown,
+            (CHOICES | PICKED | PROMPT, _) => Care::Chosen,
             (SPEAKER, _) => Care::Label,
             (PICTURE, 0) if draws_text(args) => Care::Shown,
             (SET_STRING | DB_WRITE, 0) => Care::Names,
             (CALL_BY_NAME, 0) => Care::Called,
             (CALL_BY_NAME, _) => Care::Names,
             (STRING_CONDITION, _) => Care::Compared,
-            _ => Care::Kept,
+            _ => Care::Engine,
         }),
     }
 }
 
 fn read_apart(piece: &Piece, which: usize, reached: &Reached) -> bool {
     match &piece.kind {
+        Kind::Handed => true,
         Kind::Command { code, .. } if ARGUMENTS.contains(code) => true,
         Kind::Command { code, args } if (*code, which) == (SET_STRING, 0) => {
             args.first().is_some_and(|held| reached.read_apart(*held))
@@ -170,50 +219,131 @@ fn read_apart(piece: &Piece, which: usize, reached: &Reached) -> bool {
     }
 }
 
-pub fn sift(pieces: &[Piece], reached: &Reached) -> Vec<Slot> {
-    let mut found = Vec::new();
+struct Reading<'a> {
+    care: Care,
+    shown: String,
+    carried: bool,
+    piece: &'a Piece,
+    which: usize,
+    spot: String,
+}
 
+fn each_said(
+    pieces: &[Piece],
+    reached: &Reached,
+    wants: fn(Care) -> bool,
+    mut take: impl FnMut(Reading<'_>),
+) {
     for piece in pieces {
         for (which, said) in piece.said.iter().enumerate() {
             let Some(care) = care_of(piece, which) else {
                 continue;
             };
 
-            let asked = text::asked(&said.text, reached);
-            let shown = asked.as_deref().unwrap_or(&said.text);
-
-            if !text::has_words(shown) {
+            if !wants(care) {
                 continue;
             }
 
-            let handed = reached.handed(shown.trim()) || reached.handed(said.text.trim());
-            let hard = reached.hardcoded(shown.trim()) || reached.hardcoded(said.text.trim());
-            let matched = care.matched() || handed;
-            let keyed = matched && (handed || hard);
+            let asked = text::asked(&said.text, reached);
+            let carried = asked.is_none();
+            let shown = asked.unwrap_or_else(|| said.text.clone());
 
-            let offer = match care {
-                Care::Called => Offer::Locked,
-                _ => Offer::default().or_listed(
-                    asked.is_none()
-                        || care.held_back(&said.text, shown, reached)
-                        || names_a_file(shown)
-                        || keyed,
-                ),
-            };
+            if !text::has_words(&shown) {
+                continue;
+            }
 
-            found.push(Slot {
+            take(Reading {
+                care,
+                carried,
+                shown,
+                piece,
+                which,
                 spot: format!("{}/s{which}", piece.spot),
-                offer,
-                said: asked.unwrap_or_else(|| said.text.clone()),
-                whole: said.text.clone(),
-                at: said.at.clone(),
-                apart: read_apart(piece, which, reached),
-                matched,
             });
         }
     }
+}
+
+pub fn sift(pieces: &[Piece], named: &str, reached: &Reached) -> Vec<Slot> {
+    let mut found = Vec::new();
+
+    each_said(pieces, reached, Care::anywhere, |held| {
+        let piece = held.piece;
+        let said = &piece.said[held.which];
+        let shown = held.shown.as_str();
+        let care = held.care;
+
+        let handed = reached.handed(shown.trim()) || reached.handed(said.text.trim());
+        let hard = reached.hardcoded(shown.trim()) || reached.hardcoded(said.text.trim());
+
+        let planned = reached.a_plan_name(shown);
+        let outside = planned || shipped_names(shown, reached);
+        let home = reached.at_home(shown, named, &held.spot);
+        let matched = care.matched() || handed || (home && !outside);
+        let away = !care.drawn() && reached.a_name(shown) && reached.written_down(shown) && !home;
+        let keyed = matched && (handed || hard) && !home;
+
+        let out_of_sight = care.locked() || away || (care.reads_a_name() && planned);
+
+        let offer = match out_of_sight {
+            true => Offer::Locked,
+            false => Offer::default().or_listed(
+                held.carried
+                    || care.held_back(&said.text, outside, reached.read_them_all())
+                    || names_a_file(shown)
+                    || keyed,
+            ),
+        };
+
+        let whole = said.text.clone();
+        let at = said.at.clone();
+        let apart = read_apart(piece, held.which, reached);
+
+        found.push(Slot {
+            spot: held.spot,
+            said: held.shown,
+            offer,
+            whole,
+            at,
+            apart,
+            drawn: care.drawn(),
+            matched,
+        });
+    });
 
     found
+}
+
+struct Home {
+    care: Care,
+    text: String,
+    spot: String,
+}
+
+fn homes_of(pieces: &[Piece], reached: &Reached) -> Vec<Home> {
+    let mut out = Vec::new();
+
+    each_said(pieces, reached, Care::homes, |held| {
+        out.push(Home {
+            care: held.care,
+            text: held.shown,
+            spot: held.spot,
+        });
+    });
+
+    out
+}
+
+pub fn homes_in(pieces: &[Piece], named: &str, out: &mut Reached) {
+    for home in homes_of(pieces, out) {
+        if home.care.keys() {
+            out.keyed_by(&home.text);
+        }
+
+        if let Some(rank) = home.care.rank() {
+            out.homing(&home.text, rank, named, &home.spot);
+        }
+    }
 }
 
 pub fn found_by(pieces: &[Piece], out: &mut Reached) {
@@ -246,15 +376,16 @@ pub struct Agreed {
 impl Agreed {
     pub fn saw(&mut self, slots: &[Slot], said: &BTreeMap<String, String>) {
         for slot in slots {
-            if !slot.offer.unlocked() {
-                continue;
+            if slot.apart {
+                self.apart.insert(slot.said.clone());
             }
 
             if slot.matched {
                 self.matched.insert(slot.said.clone());
             }
-            if slot.apart {
-                self.apart.insert(slot.said.clone());
+
+            if !slot.offer.unlocked() {
+                continue;
             }
 
             let Some(fresh) = said.get(&slot.spot) else {
@@ -289,12 +420,9 @@ pub fn changed(
     let mut edits = Vec::new();
 
     for slot in slots {
-        let shared = slot
-            .offer
-            .unlocked()
-            .then(|| agreed.told(&slot.said))
-            .flatten()
-            .map(|(fresh, apart)| (fresh, slot.apart || apart));
+        let shared = agreed
+            .told(&slot.said)
+            .map(|(fresh, apart)| (fresh, slot.apart || (apart && !slot.drawn)));
 
         let staged = slot
             .offer
@@ -359,14 +487,14 @@ mod tests {
     }
 
     fn taken(piece: Piece) -> Vec<String> {
-        sift(&[piece], &Reached::new())
+        sift(&[piece], "", &Reached::new())
             .into_iter()
             .map(|one| one.said)
             .collect()
     }
 
     fn asked(piece: Piece) -> Vec<String> {
-        sift(&[piece], &Reached::new())
+        sift(&[piece], "", &Reached::new())
             .into_iter()
             .filter(|one| one.offer.asked())
             .map(|one| one.said)
@@ -490,7 +618,7 @@ mod tests {
         ] {
             let row = command(SET_STRING, &[], &[&said]);
             assert!(
-                sift(slice::from_ref(&row), &reached)[0].offer != Offer::Asked,
+                sift(slice::from_ref(&row), "", &reached)[0].offer != Offer::Asked,
                 "{said:?} is glued into a picture path a folder and a suffix at a time, and a \
                  word in place of any part of it leaves the game looking for a file it never \
                  shipped"
@@ -505,7 +633,7 @@ mod tests {
                 }],
             };
             assert!(
-                sift(&[value], &reached)[0].offer != Offer::Asked,
+                sift(&[value], "", &reached)[0].offer != Offer::Asked,
                 "and the database column the same row is typed into is where a game keeps a \
                  hundred of them"
             );
@@ -513,7 +641,7 @@ mod tests {
 
         let alone = command(SET_STRING, &[], &[gained]);
         assert!(
-            sift(slice::from_ref(&alone), &reached)[0].offer != Offer::Asked,
+            sift(slice::from_ref(&alone), "", &reached)[0].offer != Offer::Asked,
             "a word standing on its own is held back the same way: a name the game ships a file \
              under costs a picture the game can no longer find, and a word held back is still \
              shown and still settled by hand"
@@ -521,22 +649,278 @@ mod tests {
 
         let plain = command(SET_STRING, &[], &["\u{9060}\u{3044}\u{9053}"]);
         assert!(
-            sift(slice::from_ref(&plain), &reached)[0].offer.asked(),
+            sift(slice::from_ref(&plain), "", &reached)[0].offer.asked(),
             "and a word the game ships nothing under is a word a player reads"
         );
 
         let under = command(SET_STRING, &[], &[&format!("CharaChip/{gained}")]);
         assert!(
-            sift(slice::from_ref(&under), &reached)[0].offer != Offer::Asked,
+            sift(slice::from_ref(&under), "", &reached)[0].offer != Offer::Asked,
             "a row that carries its own folder and waits only on a suffix reaches the same file, \
              so the folder in front of it may not hide the name behind it"
         );
 
         let drawn = command(MESSAGE, &[], &[gained]);
         assert!(
-            sift(slice::from_ref(&drawn), &reached)[0].offer.asked(),
+            sift(slice::from_ref(&drawn), "", &reached)[0].offer.asked(),
             "a box draws the word it holds and never looks a file up by it, so the same spelling \
              in a message is asked about as plainly as any other line"
+        );
+
+        let branch = command(STRING_CONDITION, &[], &[gained]);
+        assert_eq!(
+            sift(slice::from_ref(&branch), "", &reached)[0].offer,
+            Offer::Listed,
+            "a file lying beside the game under the same spelling is a resemblance and not a \
+             ruling, so a branch comparing the word is laid in front of the reader rather than \
+             kept out of sight: only what the format itself settles is ever locked"
+        );
+    }
+
+    #[test]
+    fn the_wide_space_a_command_needs_is_not_laid_into_the_box_that_only_draws_the_name() {
+        let who = "\u{4eba}\u{9593} \u{5175}";
+
+        let piece = |spot: &str, kind: Kind| Piece {
+            spot: spot.to_string(),
+            kind,
+            said: vec![Said {
+                text: who.to_string(),
+                at: 0..16,
+            }],
+        };
+        let held = |piece: Piece| Held {
+            plain: Vec::new(),
+            shape: Shape::Loose,
+            pieces: vec![piece],
+        };
+
+        let mut reached = Reached::new();
+        reached.hands(who);
+
+        let handed = held(piece("l3/a1", Kind::Handed));
+        let drawn = held(command(MESSAGE, &[], &[who]));
+
+        let said = BTreeMap::from([("e0/p0/c0/s0".to_string(), "Human Soldier".to_string())]);
+        let mut agreed = Agreed::default();
+        agreed.saw(&sift(&handed.pieces, "", &reached), &said);
+        agreed.saw(&sift(&drawn.pieces, "", &reached), &said);
+
+        let laid = |one: &Held| {
+            String::from_utf8_lossy(
+                &changed(
+                    one,
+                    &sift(&one.pieces, "", &reached),
+                    &said,
+                    &agreed,
+                    &reached,
+                )[0]
+                .1,
+            )
+            .into_owned()
+        };
+
+        assert_eq!(
+            laid(&handed),
+            "Human\u{3000}Soldier",
+            "a script reads its orders one space at a time, so the token it hands over is spelled \
+             with the space the engine will not break on"
+        );
+        assert_eq!(
+            laid(&drawn),
+            "Human Soldier",
+            "but the box only draws the name, and widening its space to suit a command the box \
+             never reaches leaves the player looking at a gap nobody asked for"
+        );
+    }
+
+    #[test]
+    fn a_button_spelling_a_name_the_game_looks_up_by_is_held_back_and_a_box_saying_it_is_not() {
+        let kind = "\u{30a2}\u{30a4}\u{30c6}\u{30e0}";
+        let quit = "\u{3084}\u{3081}\u{308b}";
+
+        let mut reached = Reached::new();
+        reached.plans(kind);
+
+        let menu = command(CHOICES, &[], &[kind, quit]);
+        let picked = sift(slice::from_ref(&menu), "", &reached);
+
+        assert_eq!(
+            picked[0].offer,
+            Offer::Listed,
+            "the game hands back whichever button was pressed and reaches a database type by \
+             that very word, so a wording of its own would send the engine after a type the \
+             plan never spelled out"
+        );
+        assert!(
+            picked[1].offer.asked(),
+            "and the button beside it names nothing the plan spells out, so it is asked about \
+             like any other word the player reads"
+        );
+
+        let box_of = command(MESSAGE, &[], &[kind]);
+        assert!(
+            sift(slice::from_ref(&box_of), "", &reached)[0]
+                .offer
+                .asked(),
+            "a box hands nothing back: it draws the word and the word goes nowhere, so the same \
+             spelling in a message is a line to read like any other"
+        );
+    }
+
+    #[test]
+    fn a_word_the_game_glues_onto_the_end_of_a_picture_name_is_held_back_standing_alone() {
+        let mood = "\u{666e}\u{901a}";
+        let who = "\u{30ec}\u{30aa}\u{30eb}";
+
+        let mut reached = Reached::new();
+        for stem in [
+            format!("{who}_{mood}"),
+            format!("chara_{who}"),
+            "face_Normal".to_string(),
+        ] {
+            reached.keeps(&stem);
+            reached.ships(stem.split_once('_').expect("a stem with a tail").1);
+        }
+
+        let spelled = command(SET_STRING, &[], &["normal"]);
+        assert!(
+            sift(slice::from_ref(&spelled), "", &reached)[0].offer != Offer::Asked,
+            "the game looks its files up on a disk that reads Normal and normal as one name, so a \
+             tail spelled either way reaches the same picture and is held back either way"
+        );
+
+        for said in [mood, who] {
+            let row = command(SET_STRING, &[], &[said]);
+            assert!(
+                sift(slice::from_ref(&row), "", &reached)[0].offer != Offer::Asked,
+                "{said:?} is the tail the game glues onto a face to spell the picture it draws, \
+                 and a word in its place leaves the game looking for a face no file answers to"
+            );
+        }
+
+        let drawn = command(MESSAGE, &[], &[mood]);
+        assert!(
+            sift(slice::from_ref(&drawn), "", &reached)[0].offer.asked(),
+            "the same word inside a box is drawn rather than looked up, so it is asked about as \
+             plainly as any other line the player reads"
+        );
+    }
+
+    #[test]
+    fn a_speaker_is_held_back_once_a_script_this_reader_could_not_open_may_have_named_it() {
+        let who = "\u{5730}\u{306e}\u{6587}1";
+        let token = command(SPEAKER, &[], &[who]);
+
+        assert!(
+            sift(slice::from_ref(&token), "", &Reached::new())[0]
+                .offer
+                .asked(),
+            "a box draws the name it is headed by, so with every script read there is nothing \
+             left that could have named this one a key"
+        );
+
+        let mut blind = Reached::new();
+        blind.missed_a_script();
+
+        assert!(
+            sift(slice::from_ref(&token), "", &blind)[0].offer != Offer::Asked,
+            "but a script this reader could not open is exactly where the game hands a portrait \
+             to a name, and guessing that it did not leaves the box looking for a face under a \
+             word nobody wrote"
+        );
+
+        let row = Piece {
+            spot: "t27/d4/f0".to_string(),
+            kind: Kind::Naming,
+            said: vec![Said {
+                text: who.to_string(),
+                at: 0..12,
+            }],
+        };
+
+        assert!(
+            sift(slice::from_ref(&row), "", &Reached::new())[0]
+                .offer
+                .asked(),
+            "with every script read, the row a name is written down in is the one place to ask"
+        );
+        assert!(
+            sift(slice::from_ref(&row), "", &blind)[0].offer != Offer::Asked,
+            "and the row the rest of the game finds by this word is held back for the same \
+             reason the speaker is: renaming it lays one wording into every place this reader \
+             found, while the script it could not open goes on handing over the old one"
+        );
+    }
+
+    #[test]
+    fn a_word_one_place_holds_back_as_a_key_is_held_back_in_every_other_place_too() {
+        let key = "[\u{30b5}\u{30d6}]\u{30a2}\u{30a4}\u{30c6}\u{30e0}";
+
+        let row = Piece {
+            spot: "t27/d2/f4".to_string(),
+            kind: Kind::Value,
+            said: vec![Said {
+                text: key.to_string(),
+                at: 0..16,
+            }],
+        };
+
+        assert!(
+            sift(slice::from_ref(&row), "", &Reached::new())[0]
+                .offer
+                .asked(),
+            "a database row nobody looks up by name is a row a player reads"
+        );
+
+        let mut reached = Reached::new();
+        reached.keyed_by(key);
+        reached.homing(key, 0, "elsewhere", "t0/d0/f0/s0");
+
+        assert!(
+            sift(slice::from_ref(&row), "", &reached)[0].offer == Offer::Locked,
+            "event code elsewhere in the game reaches a row by this very word and the word is \
+             written down in one place already, so this copy is kept out of sight and follows \
+             whatever that one place is called"
+        );
+    }
+
+    #[test]
+    fn a_word_no_place_writes_down_is_asked_about_where_it_stands_rather_than_kept_out_of_sight() {
+        let choice = command(CHOICES, &[], &["\u{306f}\u{3044}"]);
+        let branch = command(STRING_CONDITION, &[], &["\u{306f}\u{3044}"]);
+        let pieces = [choice, branch];
+
+        let mut reached = Reached::new();
+        homes_in(&pieces, "MapData/Dungeon.mps", &mut reached);
+
+        assert!(
+            sift(&pieces, "MapData/Dungeon.mps", &reached)
+                .iter()
+                .all(|one| one.offer.asked()),
+            "a branch compares against the button beside it and neither of the two is a row \
+             written down anywhere else, so keeping both out of sight would leave the player \
+             reading the language the game shipped in with no place left to answer"
+        );
+    }
+
+    #[test]
+    fn a_name_with_a_space_in_it_still_reaches_a_command_as_one_word() {
+        let who = "\u{4eba}\u{9593}\u{5175}\u{58ebA}";
+        let arg = Piece {
+            spot: "l3/a1".to_string(),
+            kind: Kind::Handed,
+            said: vec![Said {
+                text: who.to_string(),
+                at: 0..16,
+            }],
+        };
+
+        assert!(
+            sift(slice::from_ref(&arg), "", &Reached::new())[0].apart,
+            "a script reads its orders one space at a time, so a wording of two words laid in \
+             here would leave the engine holding the first of them and calling the rest an \
+             argument it cannot make sense of"
         );
     }
 
@@ -771,14 +1155,14 @@ mod tests {
         assert!(!reached.hardcoded(plain));
 
         assert_eq!(
-            sift(&[command(SET_STRING, &[], &[layer])], &reached)
+            sift(&[command(SET_STRING, &[], &[layer])], "", &reached)
                 .into_iter()
                 .map(|one| !one.offer.asked())
                 .collect::<Vec<bool>>(),
             [true]
         );
         assert_eq!(
-            sift(&[command(SET_STRING, &[], &[plain])], &reached)
+            sift(&[command(SET_STRING, &[], &[plain])], "", &reached)
                 .into_iter()
                 .map(|one| !one.offer.asked())
                 .collect::<Vec<bool>>(),
@@ -819,6 +1203,7 @@ mod tests {
                 &[],
                 &["\u{5f37}\u{904b}\u{306e}", "\u{306f}\u{3044}"],
             )],
+            "",
             &Reached::new(),
         );
 
@@ -832,6 +1217,7 @@ mod tests {
         assert!(
             sift(
                 &[command(STRING_CONDITION, &[], &["Dauntless"])],
+                "",
                 &Reached::new()
             )[0]
             .offer
@@ -857,11 +1243,11 @@ mod tests {
         let reached = Reached::new();
 
         agreed.saw(
-            &sift(&branch.pieces, &reached),
+            &sift(&branch.pieces, "", &reached),
             &BTreeMap::from([("e0/p0/c0/s0".to_string(), "Yes indeed".to_string())]),
         );
         agreed.saw(
-            &sift(&choice.pieces, &reached),
+            &sift(&choice.pieces, "", &reached),
             &BTreeMap::from([("e0/p0/c0/s0".to_string(), "Yes".to_string())]),
         );
 
@@ -876,7 +1262,7 @@ mod tests {
             String::from_utf8_lossy(
                 &changed(
                     one,
-                    &sift(&one.pieces, &reached),
+                    &sift(&one.pieces, "", &reached),
                     &BTreeMap::new(),
                     &agreed,
                     &reached,
@@ -916,18 +1302,18 @@ mod tests {
         };
 
         assert!(
-            sift(&[token], &reached)[0].offer != Offer::Asked,
+            sift(&[token], "", &reached)[0].offer != Offer::Asked,
             "the game matches this token against a portrait registry filled by event code \
              nothing here can rewrite, so a translated token is a portrait it can no longer find"
         );
         assert!(
-            sift(&[display], &reached)[0].offer != Offer::Asked,
+            sift(&[display], "", &reached)[0].offer != Offer::Asked,
             "and the display field feeding that registry keeps the same spelling, or the two \
              sides of the match drift apart"
         );
 
         assert!(
-            sift(&[command(PICKED, &[], &["\u{306f}\u{3044}"])], &reached)[0]
+            sift(&[command(PICKED, &[], &["\u{306f}\u{3044}"])], "", &reached)[0]
                 .offer
                 .asked(),
             "a choice is handed to no command, so it is still asked about"
@@ -952,12 +1338,12 @@ mod tests {
         };
 
         assert!(
-            sift(&[token], &reached)[0].offer != Offer::Asked,
+            sift(&[token], "", &reached)[0].offer != Offer::Asked,
             "the box is opened by this name, and a reach spells the same name out inside the \
              data, so the token the event code writes has to keep it"
         );
         assert!(
-            sift(&[display], &reached)[0].offer.asked(),
+            sift(&[display], "", &reached)[0].offer.asked(),
             "the field the box actually draws is a different field from the one the reach names, \
              so holding it back too is what leaves every speaker in the language the game shipped \
              in with nothing gained"
@@ -980,25 +1366,25 @@ mod tests {
         let reached = Reached::new();
 
         assert!(
-            sift(&choice.pieces, &reached)[0].offer.asked(),
+            sift(&choice.pieces, "", &reached)[0].offer.asked(),
             "the player reads a choice, so it is always asked about"
         );
         assert!(
-            !sift(&branch.pieces, &reached)[0].offer.asked(),
+            !sift(&branch.pieces, "", &reached)[0].offer.asked(),
             "and a rule guesses the branch compares against a name, which is the whole setup"
         );
 
         let said = BTreeMap::from([("e0/p0/c0/s0".to_string(), "Hai_1".to_string())]);
 
         let mut agreed = Agreed::default();
-        agreed.saw(&sift(&choice.pieces, &reached), &said);
-        agreed.saw(&sift(&branch.pieces, &reached), &said);
+        agreed.saw(&sift(&choice.pieces, "", &reached), &said);
+        agreed.saw(&sift(&branch.pieces, "", &reached), &said);
 
         assert_eq!(
             String::from_utf8_lossy(
                 &changed(
                     &branch,
-                    &sift(&branch.pieces, &reached),
+                    &sift(&branch.pieces, "", &reached),
                     &BTreeMap::new(),
                     &agreed,
                     &reached
@@ -1016,7 +1402,7 @@ mod tests {
             String::from_utf8_lossy(
                 &changed(
                     &branch,
-                    &sift(&branch.pieces, &reached),
+                    &sift(&branch.pieces, "", &reached),
                     &byhand,
                     &agreed,
                     &reached
@@ -1027,6 +1413,149 @@ mod tests {
             "and a wording typed straight into the branch loses to the one the choice took, \
              because the option on screen is the one the player picks: settling one side of a \
              comparison on its own can only build a branch that never fires again"
+        );
+    }
+
+    #[test]
+    fn a_name_the_database_plan_spells_out_is_never_written_down_so_no_wording_follows_it() {
+        let kind = "\u{6280}\u{80fd}";
+
+        let label = Piece {
+            spot: "t18/d24/f1".to_string(),
+            kind: Kind::Value,
+            said: vec![Said {
+                text: kind.to_string(),
+                at: 0..8,
+            }],
+        };
+        let reads = command(DB_WRITE, &[], &["", kind]);
+
+        let mut reached = Reached::new();
+        reached.plans(kind);
+        homes_in(
+            slice::from_ref(&label),
+            "BasicData/CDataBase.dat",
+            &mut reached,
+        );
+
+        assert!(
+            !sift(slice::from_ref(&label), "BasicData/CDataBase.dat", &reached)[0]
+                .offer
+                .asked(),
+            "and the row is held back rather than asked about, because a word the engine looks a \
+             type up by cannot be renamed halfway"
+        );
+        let taken = sift(slice::from_ref(&reads), "", &reached);
+        let handed = taken
+            .iter()
+            .find(|one| one.said == kind)
+            .expect("the name the command hands over");
+
+        assert_eq!(
+            handed.offer,
+            Offer::Locked,
+            "while the command that hands the name over spells out no word of its own, so it is \
+             kept out of sight rather than laid in front of a reader who has nothing to decide"
+        );
+
+        let held = Held {
+            plain: Vec::new(),
+            shape: Shape::Loose,
+            pieces: vec![reads],
+        };
+        let said = BTreeMap::from([("t18/d24/f1/s0".to_string(), "Skill".to_string())]);
+
+        let mut agreed = Agreed::default();
+        agreed.saw(
+            &sift(slice::from_ref(&label), "BasicData/CDataBase.dat", &reached),
+            &said,
+        );
+
+        assert!(
+            changed(
+                &held,
+                &sift(&held.pieces, "", &reached),
+                &said,
+                &agreed,
+                &reached
+            )
+            .is_empty(),
+            "so translating that row by hand leaves every command that reaches the type alone, \
+             rather than sending the engine after a type the database was never told about"
+        );
+    }
+
+    #[test]
+    fn a_name_written_down_once_is_laid_into_every_hidden_place_the_game_spells_it() {
+        let who = "\u{30ab}\u{30eb}\u{30df}\u{30a2}";
+
+        let piece = |spot: &str, kind: Kind| Piece {
+            spot: spot.to_string(),
+            kind,
+            said: vec![Said {
+                text: who.to_string(),
+                at: 0..16,
+            }],
+        };
+        let held = |piece: Piece| Held {
+            plain: Vec::new(),
+            shape: Shape::Loose,
+            pieces: vec![piece],
+        };
+
+        let written = held(piece("t0/d0/f0", Kind::Naming));
+        let handed = held(piece("l3/a1", Kind::Handed));
+
+        let mut reached = Reached::new();
+        reached.hands(who);
+        reached.keyed_by(who);
+        reached.homing(who, 0, "", "t0/d0/f0/s0");
+        reached.homing(who, 2, "", "l3/a1/s0");
+
+        let slots = sift(&written.pieces, "", &reached);
+        assert!(
+            slots[0].offer.asked(),
+            "the row the plan spells the name out in is the one place it is written down, so \
+             that is where the reader is asked for a wording, however many hidden places spell \
+             the same name: a copy may never be the reason its own original is held back"
+        );
+        assert_eq!(
+            sift(&handed.pieces, "", &reached)[0].offer,
+            Offer::Locked,
+            "and the script handing the same name to a command is no line to read twice: it is \
+             kept out of sight so the reader answers once"
+        );
+
+        let said = BTreeMap::from([("t0/d0/f0/s0".to_string(), "Kalmia Rose".to_string())]);
+        let mut agreed = Agreed::default();
+        agreed.saw(&slots, &said);
+        agreed.saw(&sift(&handed.pieces, "", &reached), &said);
+
+        let laid = |one: &Held| {
+            String::from_utf8_lossy(
+                &changed(
+                    one,
+                    &sift(&one.pieces, "", &reached),
+                    &said,
+                    &agreed,
+                    &reached,
+                )[0]
+                .1,
+            )
+            .into_owned()
+        };
+
+        assert_eq!(
+            laid(&handed),
+            "Kalmia\u{3000}Rose",
+            "the hidden place still has to follow, or the game looks a portrait up under a name \
+             only half the game was renamed to, and a script reads its orders one space at a time"
+        );
+        assert_eq!(
+            laid(&written),
+            laid(&handed),
+            "and the row the name is written down in has to be spelled the way the script hands \
+             it over, or the one word the engine carries reaches a row of another name"
         );
     }
 
@@ -1049,14 +1578,14 @@ mod tests {
         let byhand = BTreeMap::from([("e0/p0/c0/s0".to_string(), "Sou_1".to_string())]);
 
         let mut agreed = Agreed::default();
-        agreed.saw(&sift(&branch.pieces, &reached), &byhand);
-        agreed.saw(&sift(&label.pieces, &reached), &BTreeMap::new());
+        agreed.saw(&sift(&branch.pieces, "", &reached), &byhand);
+        agreed.saw(&sift(&label.pieces, "", &reached), &BTreeMap::new());
 
         assert_eq!(
             String::from_utf8_lossy(
                 &changed(
                     &label,
-                    &sift(&label.pieces, &reached),
+                    &sift(&label.pieces, "", &reached),
                     &BTreeMap::new(),
                     &agreed,
                     &reached
@@ -1086,14 +1615,14 @@ mod tests {
         let said = BTreeMap::from([("e0/p0/c0/s0".to_string(), "Narration two".to_string())]);
 
         let mut agreed = Agreed::default();
-        agreed.saw(&sift(&token.pieces, &reached), &said);
-        agreed.saw(&sift(&branch.pieces, &reached), &said);
+        agreed.saw(&sift(&token.pieces, "", &reached), &said);
+        agreed.saw(&sift(&branch.pieces, "", &reached), &said);
 
         let written = |one: &Held| {
             String::from_utf8_lossy(
                 &changed(
                     one,
-                    &sift(&one.pieces, &reached),
+                    &sift(&one.pieces, "", &reached),
                     &BTreeMap::new(),
                     &agreed,
                     &reached,
@@ -1135,7 +1664,7 @@ mod tests {
             String::from_utf8_lossy(
                 &changed(
                     &held,
-                    &sift(&held.pieces, &reached),
+                    &sift(&held.pieces, "", &reached),
                     &said,
                     &Agreed::default(),
                     &reached
@@ -1152,7 +1681,7 @@ mod tests {
             String::from_utf8_lossy(
                 &changed(
                     &held,
-                    &sift(&held.pieces, &reached),
+                    &sift(&held.pieces, "", &reached),
                     &said,
                     &Agreed::default(),
                     &reached
@@ -1189,7 +1718,7 @@ mod tests {
         let written = String::from_utf8_lossy(
             &changed(
                 &held,
-                &sift(&held.pieces, &reached),
+                &sift(&held.pieces, "", &reached),
                 &said,
                 &Agreed::default(),
                 &reached,
@@ -1223,12 +1752,20 @@ mod tests {
         };
 
         assert!(
-            sift(&[held(Kind::Naming)], &reached)[0].offer != Offer::Asked,
-            "the event code finds this row by this word, and renaming it here leaves the code \
-             looking for a row that is no longer there"
+            sift(&[held(Kind::Naming)], "", &reached)[0].offer != Offer::Asked,
+            "the event code finds this row by this word, so with nothing yet saying where the \
+             word is written down there is no place safe to rename it"
+        );
+
+        reached.homing(who, 0, "", "t27/d4/f0/s0");
+
+        assert!(
+            sift(&[held(Kind::Naming)], "", &reached)[0].offer.asked(),
+            "and once this row is known to be the one place the word is written down, asking \
+             here once is what lets one wording be laid into every place that reaches the row"
         );
         assert!(
-            sift(&[held(Kind::Value)], &reached)[0].offer.asked(),
+            sift(&[held(Kind::Value)], "", &reached)[0].offer.asked(),
             "the same word standing in a field nobody finds a row by is the name the box draws, \
              and holding it back is what leaves every speaker in the language the game shipped in"
         );
@@ -1245,7 +1782,7 @@ mod tests {
             }],
         };
 
-        let found = sift(&[held], &Reached::new());
+        let found = sift(&[held], "", &Reached::new());
 
         assert_eq!(found[0].spot, "t2/d0/f1/s0");
         assert!(
@@ -1259,7 +1796,7 @@ mod tests {
         let called = command(CALL_BY_NAME, &[], &["\u{56de}\u{5fa9}\u{51e6}\u{7406}"]);
 
         assert_eq!(
-            sift(slice::from_ref(&called), &Reached::new())[0].offer,
+            sift(slice::from_ref(&called), "", &Reached::new())[0].offer,
             Offer::Locked,
             "the command code itself says this word is the name the engine looks the event up by, \
              so this is not a guess to be overruled: renaming it leaves the call finding nothing"
@@ -1275,7 +1812,7 @@ mod tests {
         assert!(
             changed(
                 &held,
-                &sift(&held.pieces, &Reached::new()),
+                &sift(&held.pieces, "", &Reached::new()),
                 &said,
                 &Agreed::default(),
                 &Reached::new()
@@ -1318,7 +1855,7 @@ mod tests {
 
         let edits = changed(
             &held,
-            &sift(&held.pieces, &Reached::new()),
+            &sift(&held.pieces, "", &Reached::new()),
             &said,
             &Agreed::default(),
             &Reached::new(),
@@ -1346,6 +1883,6 @@ mod tests {
             }],
         };
 
-        assert!(sift(&[held], &Reached::new()).is_empty());
+        assert!(sift(&[held], "", &Reached::new()).is_empty());
     }
 }

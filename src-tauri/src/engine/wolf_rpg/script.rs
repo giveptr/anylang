@@ -2,6 +2,7 @@ use crate::engine::wolf_rpg::event::MESSAGE;
 use crate::engine::wolf_rpg::held::{Held, Kind, Piece, Said, Shape};
 use crate::engine::wolf_rpg::reached::Reached;
 use regex::Regex;
+use std::borrow::Cow;
 use std::ops::Range;
 use std::str;
 use std::sync::LazyLock;
@@ -114,9 +115,46 @@ fn flushed(boxful: &mut Option<Boxful>, pieces: &mut Vec<Piece>, whole: &str) {
     }
 }
 
+fn older(raw: &[u8]) -> Result<String, String> {
+    let (text, _, wrong) = encoding_rs::SHIFT_JIS.decode(raw);
+
+    match wrong {
+        true => Err("this script is spelled no way this reader knows".to_string()),
+        false => Ok(format!("{MARK}{}", text.trim_start_matches(MARK))),
+    }
+}
+
+fn handed_off(body: &str, which: usize, from: usize, pieces: &mut Vec<Piece>) {
+    if !body.starts_with(ORDER) {
+        return;
+    }
+
+    let mut at = from;
+    for (nth, token) in body.split(' ').enumerate() {
+        let start = at;
+        at += token.len() + 1;
+
+        if nth == 0 || token.is_empty() {
+            continue;
+        }
+
+        pieces.push(Piece {
+            spot: format!("l{which}/a{nth}"),
+            kind: Kind::Handed,
+            said: vec![Said {
+                text: token.to_string(),
+                at: start..start + token.len(),
+            }],
+        });
+    }
+}
+
 pub fn read(raw: &[u8]) -> Result<Held, String> {
-    let whole = str::from_utf8(raw)
-        .map_err(|_| "this script is not the UTF-8 the newer editor writes".to_string())?;
+    let plain = match str::from_utf8(raw) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => Cow::Owned(older(raw)?),
+    };
+    let whole: &str = &plain;
 
     let mut pieces = Vec::new();
     let mut at = 0usize;
@@ -160,6 +198,7 @@ pub fn read(raw: &[u8]) -> Result<Held, String> {
             None => {
                 if closes(body) {
                     flushed(&mut boxful, &mut pieces, whole);
+                    handed_off(body, which, at + skipped, &mut pieces);
                     telling = false;
                     at += step;
                     continue;
@@ -201,7 +240,7 @@ pub fn read(raw: &[u8]) -> Result<Held, String> {
     flushed(&mut boxful, &mut pieces, whole);
 
     Ok(Held {
-        plain: raw.to_vec(),
+        plain: plain.into_owned().into_bytes(),
         shape: Shape::Loose,
         pieces,
     })
@@ -216,7 +255,7 @@ mod tests {
     fn sifted(raw: &[u8]) -> Vec<String> {
         let held = read(raw).expect("a script");
 
-        harvest::sift(&held.pieces, &Default::default())
+        harvest::sift(&held.pieces, "", &Default::default())
             .into_iter()
             .map(|one| one.said)
             .collect()
@@ -257,7 +296,7 @@ mod tests {
         taken_apart(raw, &mut reached);
 
         assert_eq!(
-            harvest::sift(&held.pieces, &reached)
+            harvest::sift(&held.pieces, "", &reached)
                 .into_iter()
                 .map(|one| (one.said, !one.offer.asked()))
                 .collect::<Vec<(String, bool)>>(),
@@ -281,7 +320,7 @@ mod tests {
             "@select 0 100 \u{30aa}\u{30fc}\u{30d7}\u{30cb}\u{30f3}\u{30b0}\u{3092}\u{2026}\r\n";
         let held = read(raw.as_bytes()).expect("a script");
         let reached = Reached::new();
-        let taken = harvest::sift(&held.pieces, &reached);
+        let taken = harvest::sift(&held.pieces, "", &reached);
 
         assert_eq!(taken.len(), 1, "the question is a line of the game");
         assert_eq!(
@@ -296,7 +335,7 @@ mod tests {
         let said = BTreeMap::from([(taken[0].spot.clone(), "The opening...".to_string())]);
         let edits = harvest::changed(
             &held,
-            &harvest::sift(&held.pieces, &reached),
+            &harvest::sift(&held.pieces, "", &reached),
             &said,
             &Default::default(),
             &reached,
@@ -331,7 +370,7 @@ mod tests {
         let mut reached = Reached::new();
         reached.codes("\u{5730}\u{306e}\u{6587}1");
 
-        let taken = harvest::sift(&held.pieces, &reached);
+        let taken = harvest::sift(&held.pieces, "", &reached);
         assert_eq!(
             taken
                 .iter()
@@ -381,8 +420,9 @@ mod tests {
 
         assert_eq!(
             sifted(raw),
-            ["\u{306f}\u{3044}"],
-            "a choice reads as words on the button, not as a name looked up elsewhere"
+            ["\u{306f}\u{3044}", "a/b/c"],
+            "a choice reads as words on the button, and the name the next command is handed \
+             rides along beside it so one wording can be laid into every place that spells it"
         );
     }
 
@@ -394,12 +434,15 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_line_under_a_command_that_is_not_a_message_is_left_alone() {
+    fn a_bare_line_under_a_command_that_is_not_a_message_is_left_alone_and_its_argument_is_not() {
         let raw = "@setface a/b/c\r\n\u{5730}\u{306e}\u{6587}\r\n".as_bytes();
 
-        assert!(
-            sifted(raw).is_empty(),
-            "only a message carries its words on the lines below it"
+        assert_eq!(
+            sifted(raw),
+            ["a/b/c"],
+            "only a message carries its words on the lines below it, so the bare row under this \
+             one is no line of the game at all, while the word the command is handed comes out on \
+             its own so a translation can be laid into every place that spells it"
         );
     }
 
@@ -408,7 +451,7 @@ mod tests {
         let raw = "\u{feff}@mes \u{5730}\u{306e}\u{6587}1\r\n\u{3053}\u{308c}\u{306f}\u{5263}\r\n"
             .as_bytes();
         let held = read(raw).expect("a script");
-        let taken = harvest::sift(&held.pieces, &Default::default());
+        let taken = harvest::sift(&held.pieces, "", &Default::default());
 
         for (slot, wanted) in taken.iter().zip([
             "\u{5730}\u{306e}\u{6587}1",
@@ -435,7 +478,7 @@ mod tests {
             &held,
             harvest::changed(
                 &held,
-                &harvest::sift(&held.pieces, &Default::default()),
+                &harvest::sift(&held.pieces, "", &Default::default()),
                 &said,
                 &Default::default(),
                 &Default::default(),
@@ -472,7 +515,7 @@ mod tests {
             &held,
             harvest::changed(
                 &held,
-                &harvest::sift(&held.pieces, &Default::default()),
+                &harvest::sift(&held.pieces, "", &Default::default()),
                 &said,
                 &Default::default(),
                 &Default::default(),
@@ -494,7 +537,23 @@ mod tests {
     }
 
     #[test]
-    fn a_script_that_is_not_utf8_is_turned_away_rather_than_mangled() {
-        assert!(read(&[0x40, 0x6d, 0x65, 0x73, 0x20, 0x82, 0xa0]).is_err());
+    fn a_script_the_older_editor_spelled_is_read_and_handed_back_the_newer_way() {
+        let held = read(b"@mes \x82\xa0\r\n").expect("a script the older editor wrote");
+
+        assert_eq!(
+            str::from_utf8(&held.plain).expect("text"),
+            "\u{feff}@mes \u{3042}\r\n",
+            "the game keeps its own scripts in whatever the author's editor wrote, and turning \
+             the file away leaves every line of a game's talk out of the translation; it goes \
+             back the way the newer editor writes, mark and all"
+        );
+    }
+
+    #[test]
+    fn a_script_spelled_no_way_this_reader_knows_is_turned_away_rather_than_mangled() {
+        assert!(
+            read(&[0x40, 0x6d, 0x65, 0x73, 0x20, 0x80, 0xff]).is_err(),
+            "writing a guess back over a file nobody could read is how a game loses lines it had"
+        );
     }
 }

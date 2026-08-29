@@ -12,6 +12,8 @@ pub struct Said {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
     Command { code: u32, args: Vec<u32> },
+    Called,
+    Handed,
     Value,
     Naming,
     Title,

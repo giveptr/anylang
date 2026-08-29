@@ -16,14 +16,9 @@ const NAMED_TYPE: u32 = 0x0001_D4C0;
 const SAID_FROM: u32 = 0x07D0;
 
 pub struct Counted {
-    pub fields: usize,
-    pub names: Vec<String>,
-}
-
-impl Counted {
-    pub fn entries(&self) -> usize {
-        self.names.len()
-    }
+    pub named: String,
+    pub fields: Vec<String>,
+    pub entries: Vec<String>,
 }
 
 pub fn plan(raw: &[u8]) -> Result<Vec<Counted>, String> {
@@ -41,23 +36,27 @@ pub fn plan(raw: &[u8]) -> Result<Vec<Counted>, String> {
 }
 
 fn planned(reader: &mut Reader) -> Result<Counted, String> {
-    reader.past_said()?;
+    let named = reader.said()?.0;
 
-    let fields = reader.count()?;
-    reader.past_saids(fields)?;
+    let count = reader.count()?;
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        fields.push(reader.said()?.0);
+    }
 
-    let entries = reader.count()?;
-    let mut names = Vec::with_capacity(entries);
-    for _ in 0..entries {
-        names.push(reader.said()?.0);
+    let count = reader.count()?;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        entries.push(reader.said()?.0);
     }
 
     reader.past_said()?;
 
     let listed = reader.count()?;
-    if listed < fields {
+    if listed < fields.len() {
         return Err(format!(
-            "{fields} fields were named and only {listed} were typed"
+            "{} fields were named and only {listed} were typed",
+            fields.len()
         ));
     }
     reader.skip(listed)?;
@@ -73,7 +72,11 @@ fn planned(reader: &mut Reader) -> Result<Counted, String> {
         reader.word()?;
     }
 
-    Ok(Counted { fields, names })
+    Ok(Counted {
+        named,
+        fields,
+        entries,
+    })
 }
 
 pub fn read(raw: &[u8], plan: &[Counted]) -> Result<Held, String> {
@@ -124,10 +127,10 @@ fn one(
 
     let named = reader.word()?;
     let fields = reader.count()?;
-    if fields > counted.fields {
+    if fields > counted.fields.len() {
         return Err(format!(
             "the plan names {} fields and the data holds {fields}",
-            counted.fields
+            counted.fields.len()
         ));
     }
     if named == NAMED_TYPE {
@@ -157,7 +160,7 @@ fn one(
     }
 
     let listed = reader.word()? as usize;
-    let entries = counted.entries().min(listed);
+    let entries = counted.entries.len().min(listed);
     let numbers = fields - saids;
 
     let mut rows: Vec<Vec<Piece>> = Vec::with_capacity(entries);
@@ -181,7 +184,7 @@ fn one(
         rows.push(row);
     }
 
-    for at in naming(&rows, &counted.names) {
+    for at in naming(&rows, &counted.entries) {
         for row in rows.iter_mut() {
             if let Some(one) = row.get_mut(at) {
                 one.kind = Kind::Naming;
@@ -194,11 +197,11 @@ fn one(
     Ok(())
 }
 
-fn matching(rows: &[Vec<Piece>], names: &[String], at: usize) -> usize {
+fn matching(rows: &[Vec<Piece>], entries: &[String], at: usize) -> usize {
     let mut matched = 0;
 
     for (entry, row) in rows.iter().enumerate() {
-        let (Some(one), Some(name)) = (row.get(at), names.get(entry)) else {
+        let (Some(one), Some(name)) = (row.get(at), entries.get(entry)) else {
             return 0;
         };
 
@@ -217,7 +220,7 @@ fn matching(rows: &[Vec<Piece>], names: &[String], at: usize) -> usize {
     matched
 }
 
-fn naming(rows: &[Vec<Piece>], names: &[String]) -> Vec<usize> {
+fn naming(rows: &[Vec<Piece>], entries: &[String]) -> Vec<usize> {
     let Some(first) = rows.first() else {
         return Vec::new();
     };
@@ -226,7 +229,7 @@ fn naming(rows: &[Vec<Piece>], names: &[String]) -> Vec<usize> {
     let mut told = Vec::new();
 
     for at in 0..first.len() {
-        let matched = matching(rows, names, at);
+        let matched = matching(rows, entries, at);
 
         if matched == 0 || matched < best {
             continue;
@@ -262,8 +265,13 @@ mod tests {
         }]);
 
         let plan = plan(&plan_raw).expect("a plan");
-        assert_eq!(plan[0].fields, 3);
-        assert_eq!(plan[0].entries(), 2);
+        assert_eq!(
+            plan[0].fields,
+            ["\u{540d}\u{524d}", "\u{5024}\u{6bb5}", "\u{8aac}\u{660e}"],
+            "a command reaches a field by the name the plan gives it, and the plan is a file no \
+             translation is ever written back into, so the reader has to carry those names out"
+        );
+        assert_eq!(plan[0].entries.len(), 2);
 
         let held = read(&data, &plan).expect("a database");
 
@@ -329,7 +337,7 @@ mod tests {
         }]);
 
         let mut plan = plan(&plan_raw).expect("a plan");
-        plan[0].names[1] = "\u{4ee5}\u{4e0b}\u{30b2}\u{30b9}\u{30c8}\u{67a0}".to_string();
+        plan[0].entries[1] = "\u{4ee5}\u{4e0b}\u{30b2}\u{30b9}\u{30c8}\u{67a0}".to_string();
 
         let held = read(&data, &plan).expect("a database");
 
@@ -372,8 +380,9 @@ mod tests {
 
         let mut plan = plan(&plan_raw).expect("a plan");
         plan.push(Counted {
-            fields: 1,
-            names: vec!["row0".to_string()],
+            named: "Two".to_string(),
+            fields: vec!["a".to_string()],
+            entries: vec!["row0".to_string()],
         });
 
         assert!(read(&data, &plan).is_err());

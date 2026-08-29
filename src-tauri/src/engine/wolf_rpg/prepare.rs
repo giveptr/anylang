@@ -187,7 +187,7 @@ pub async fn run(label: &str, at: Prepare<'_>) -> Result<()> {
             };
 
             let lines = tokio::task::spawn_blocking(move || {
-                harvest::sift(&held.pieces, &reached)
+                harvest::sift(&held.pieces, &one.named, &reached)
                     .into_iter()
                     .map(|slot| sheet::Line {
                         spot: slot.spot,

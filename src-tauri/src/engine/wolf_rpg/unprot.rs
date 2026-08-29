@@ -401,7 +401,7 @@ mod tests {
         let said = BTreeMap::from([("title/s0".to_string(), "A Rather Longer Title".to_string())]);
         let edits = harvest::changed(
             &read,
-            &harvest::sift(&read.pieces, &Default::default()),
+            &harvest::sift(&read.pieces, "", &Default::default()),
             &said,
             &Default::default(),
             &Default::default(),

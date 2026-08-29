@@ -1,4 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
+
+#[derive(Debug)]
+struct Written {
+    rank: u8,
+    named: String,
+    spot: String,
+}
 
 #[derive(Debug, Default)]
 pub struct Reached {
@@ -6,6 +14,10 @@ pub struct Reached {
     parts: BTreeSet<String>,
     named: BTreeSet<String>,
     longest: usize,
+    missed: bool,
+    planned: BTreeSet<String>,
+    keys: BTreeSet<String>,
+    homes: BTreeMap<String, Written>,
     apart: BTreeSet<u32>,
     handed: BTreeSet<String>,
 }
@@ -24,14 +36,69 @@ impl Reached {
     }
 
     pub fn ships(&mut self, part: &str) {
-        self.parts.insert(part.to_string());
+        self.parts.insert(part.to_ascii_lowercase());
+    }
+
+    pub fn a_part(&self, text: &str) -> bool {
+        self.parts.contains(&text.to_ascii_lowercase())
     }
 
     pub fn builds(&self, token: &str) -> bool {
+        let token = token.to_ascii_lowercase();
+
         self.parts
-            .range(token.to_string()..)
-            .take_while(|one| one.starts_with(token))
+            .range::<str, _>((Bound::Included(token.as_str()), Bound::Unbounded))
+            .take_while(|one| one.starts_with(token.as_str()))
             .any(|one| one[token.len()..].chars().all(|held| held.is_ascii_digit()))
+    }
+
+    pub fn missed_a_script(&mut self) {
+        self.missed = true;
+    }
+
+    pub fn read_them_all(&self) -> bool {
+        !self.missed
+    }
+
+    pub fn homing(&mut self, text: &str, rank: u8, named: &str, spot: &str) {
+        if self.homes.get(text).is_some_and(|held| held.rank <= rank) {
+            return;
+        }
+
+        self.homes.insert(
+            text.to_string(),
+            Written {
+                rank,
+                named: named.to_string(),
+                spot: spot.to_string(),
+            },
+        );
+    }
+
+    pub fn written_down(&self, text: &str) -> bool {
+        self.homes.contains_key(text)
+    }
+
+    pub fn at_home(&self, text: &str, named: &str, spot: &str) -> bool {
+        self.homes
+            .get(text)
+            .is_some_and(|held| held.named == named && held.spot == spot)
+    }
+
+    pub fn plans(&mut self, name: &str) {
+        self.planned.insert(name.trim().to_string());
+    }
+
+    pub fn a_plan_name(&self, text: &str) -> bool {
+        self.planned.contains(text.trim())
+    }
+
+    pub fn keyed_by(&mut self, text: &str) {
+        self.keys.insert(text.to_string());
+    }
+
+    pub fn a_name(&self, text: &str) -> bool {
+        self.keys.contains(text)
     }
 
     pub fn keeps(&mut self, name: &str) {

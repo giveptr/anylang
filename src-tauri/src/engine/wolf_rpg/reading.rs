@@ -63,6 +63,15 @@ pub fn opened_now(store: &Path, game_dir: &Path, at: &Path) -> Option<Vec<u8>> {
 }
 
 pub async fn read(store: &Path, game_dir: &Path, one: &File) -> Result<Held> {
+    read_by(store, game_dir, one, None).await
+}
+
+async fn read_by(
+    store: &Path,
+    game_dir: &Path,
+    one: &File,
+    plan: Option<&[database::Counted]>,
+) -> Result<Held> {
     let raw = opened(store, game_dir, &one.at).await?;
 
     let held = match &one.which {
@@ -70,7 +79,10 @@ pub async fn read(store: &Path, game_dir: &Path, one: &File) -> Result<Held> {
         Which::Script => script::read(&raw),
         Which::Common => common::read(&raw),
         Which::Game => game::read(&raw),
-        Which::Database { plan } => paired(&raw, &opened(store, game_dir, plan).await?),
+        Which::Database { plan: at } => match plan {
+            Some(plan) => database::read(&raw, plan),
+            None => paired(&raw, &opened(store, game_dir, at).await?),
+        },
     };
 
     held.map_err(|why| anyhow::anyhow!("{} could not be read: {why}", one.named))
@@ -110,6 +122,26 @@ fn stems(game_dir: &Path, root: &Path, out: &mut Reached) {
     }
 }
 
+async fn planned(store: &Path, game_dir: &Path, one: &File) -> Option<Vec<database::Counted>> {
+    let Which::Database { plan } = &one.which else {
+        return None;
+    };
+
+    let raw = opened(store, game_dir, plan).await.ok()?;
+
+    database::plan(&raw).ok()
+}
+
+fn plans(types: &[database::Counted], out: &mut Reached) {
+    for counted in types {
+        out.plans(&counted.named);
+
+        for field in &counted.fields {
+            out.plans(field);
+        }
+    }
+}
+
 pub async fn looked_up(store: &Path, game_dir: &Path, root: &Path) -> Reached {
     let here = game_dir.to_path_buf();
     let over = root.to_path_buf();
@@ -124,12 +156,26 @@ pub async fn looked_up(store: &Path, game_dir: &Path, root: &Path) -> Reached {
     .expect("looking over what the game ships");
 
     for one in source::files(root).await {
-        if let Ok(held) = read(store, game_dir, &one).await {
-            if one.which == Which::Script {
-                script::taken_apart(&held.plain, &mut out);
-            }
+        let plan = planned(store, game_dir, &one).await;
 
-            harvest::found_by(&held.pieces, &mut out);
+        if let Some(types) = &plan {
+            plans(types, &mut out);
+        }
+
+        match read_by(store, game_dir, &one, plan.as_deref()).await {
+            Ok(held) => {
+                if one.which == Which::Script {
+                    script::taken_apart(&held.plain, &mut out);
+                }
+
+                harvest::found_by(&held.pieces, &mut out);
+                harvest::homes_in(&held.pieces, &one.named, &mut out);
+            }
+            Err(_) => {
+                if one.which == Which::Script {
+                    out.missed_a_script();
+                }
+            }
         }
     }
 
@@ -196,7 +242,7 @@ mod tests {
                 .unwrap_or_else(|why| panic!("{} should read: {why}", one.named));
 
             said.extend(
-                harvest::sift(&held.pieces, &Default::default())
+                harvest::sift(&held.pieces, "", &Default::default())
                     .into_iter()
                     .map(|line| line.said),
             );
@@ -210,6 +256,7 @@ mod tests {
                 "A tale of two",
                 "HP\u{3092}30\u{56de}\u{5fa9}",
                 "Press any key",
+                "\u{25a0}\u{6226}\u{95d8}",
                 "\u{3044}\u{3044}\u{3048}",
                 "\u{306f}\u{3044}",
                 "\u{6249}\u{306f}\u{9589}\u{307e}\u{3063}\u{3066}\u{3044}\u{308b}",
