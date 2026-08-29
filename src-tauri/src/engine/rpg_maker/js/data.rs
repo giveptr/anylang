@@ -1246,6 +1246,38 @@ mod tests {
     }
 
     #[test]
+    fn a_paired_tag_listing_slots_the_game_registers_is_held_back() {
+        let sheet = registering(
+            &["Weapon", "Body"],
+            json!([null, {
+                "id": 1,
+                "note": "<Equip Slot>\nWeapon\nBody\n</Equip Slot>",
+            }]),
+        );
+
+        assert!(
+            listed(&sheet, "\nWeapon\nBody\n"),
+            "a class names its slots here and the plugin looks each one up in the equip types the \
+             game registers, so a body reading like prose is not always prose: translate this one \
+             a hair differently from the list it answers to and the slot quietly leaves the menu"
+        );
+
+        let mentions = registering(
+            &["Weapon", "Body"],
+            json!([null, {
+                "id": 1,
+                "note": "<Help Description>\nBody\nGuards the chest.\n</Help Description>",
+            }]),
+        );
+
+        assert!(
+            !listed(&mentions, "\nBody\nGuards the chest.\n"),
+            "one line of a description happening to spell a registered name is a coincidence: only \
+             a body whose every line is such a name is the list a plugin reads back"
+        );
+    }
+
+    #[test]
     fn a_translated_note_tag_lands_back_between_its_own_angle_brackets() {
         let sheet = sheet(json!([null, {
             "id": 1,

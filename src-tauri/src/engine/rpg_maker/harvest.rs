@@ -43,7 +43,7 @@ const TEXT_LISTS: [&str; 11] = [
     "params",
 ];
 
-pub const LOOKED_UP_BY_NAME: [&str; 1] = ["elements"];
+pub const LOOKED_UP_BY_NAME: [&str; 2] = ["elements", "equipTypes"];
 
 const NOT_SHOWN: [&str; 6] = [
     "volume",
@@ -312,6 +312,20 @@ impl Harvest<'_> {
             .any(|token| self.dialect.registers(token.trim()))
     }
 
+    fn names_only(&self, body: &str) -> bool {
+        let mut seen = false;
+
+        for line in body.lines().map(str::trim).filter(|one| !one.is_empty()) {
+            if !self.dialect.registers(line) {
+                return false;
+            }
+
+            seen = true;
+        }
+
+        seen
+    }
+
     fn put(&mut self, text: &str, slot: Slot, listed: bool) {
         if !text::has_words(text) {
             return;
@@ -357,10 +371,11 @@ impl Harvest<'_> {
                     match part {
                         Part::Body(block) => {
                             let body = &note[block.clone()];
+                            let keyed = settings_only(body) || self.names_only(body);
                             self.put(
                                 body,
                                 Slot::Inside(here.clone(), block.clone(), Fix::Raw),
-                                settings_only(body),
+                                keyed,
                             );
                         }
                         Part::Value(block) => {
