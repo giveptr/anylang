@@ -51,8 +51,3 @@ export const presets: Preset[] = [
 
 export const firstModel = (preset: string): string =>
   presets.find((one) => one.id === preset)?.firstModel ?? '';
-
-export const presetOf = (using: Provider, baseUrl: string): string => {
-  if (using !== 'compatible') return using;
-  return presets.find((one) => one.url && one.url === baseUrl)?.id ?? 'custom';
-};

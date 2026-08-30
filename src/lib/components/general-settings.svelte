@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { commands, type Settings } from '$lib/bindings';
   import { caught } from '$lib/save';
-  import { firstModel, presetOf, presets } from '$lib/providers';
+  import { firstModel, presets } from '$lib/providers';
   import FileField from '$lib/components/file-field.svelte';
   import Picker from '$lib/components/picker.svelte';
   import TextField from '$lib/components/text-field.svelte';
@@ -15,18 +15,25 @@
   const MODEL_DECIDES = 'Leave empty to let the model decide';
 
   const options = presets.map((one) => ({ value: one.id, label: one.label }));
-  let chosen = $state('');
+  const chosen = $derived(settings?.preset ?? '');
+  const endpoint = $derived(settings?.endpoints[chosen]);
+
+  function remember(held: Settings, id: string) {
+    held.endpoints[id] ??= {
+      baseUrl: presets.find((one) => one.id === id)?.url ?? '',
+      apiKey: '',
+      model: firstModel(id),
+      temperature: '',
+    };
+  }
 
   function choose(id: string) {
     const picked = presets.find((one) => one.id === id);
     if (!settings || !picked || id === chosen) return;
 
-    chosen = id;
+    settings.preset = id;
     settings.using = picked.kind;
-    if (picked.url) settings.compatible.baseUrl = picked.url;
-
-    if (picked.kind === 'compatible' && picked.firstModel)
-      settings.compatible.model = picked.firstModel;
+    if (picked.kind === 'compatible') remember(settings, id);
   }
 
   onMount(() => {
@@ -36,17 +43,16 @@
         return;
       }
       const loaded = result.data;
-      const preset = presetOf(loaded.using, loaded.compatible.baseUrl);
+      const preset = (loaded.preset ||=
+        loaded.using === 'compatible' ? 'custom' : loaded.using);
 
       loaded.gemini.model ||= firstModel('gemini');
       loaded.vertex.model ||= firstModel('vertex');
       loaded.claude.model ||= firstModel('claude');
-      if (loaded.using === 'compatible')
-        loaded.compatible.model ||= firstModel(preset);
+      if (loaded.using === 'compatible') remember(loaded, preset);
 
       saved = JSON.stringify(loaded);
       settings = loaded;
-      chosen = preset;
     });
   });
 
@@ -128,23 +134,19 @@
         bind:value={settings.claude.model}
         placeholder="Type the exact model name"
       />
-    {:else}
+    {:else if endpoint}
       {#if chosen === 'custom'}
-        <TextField label="Base URL" bind:value={settings.compatible.baseUrl} />
+        <TextField label="Base URL" bind:value={endpoint.baseUrl} />
       {/if}
-      <TextField
-        label="API key"
-        secret
-        bind:value={settings.compatible.apiKey}
-      />
+      <TextField label="API key" secret bind:value={endpoint.apiKey} />
       <TextField
         label="Model name"
-        bind:value={settings.compatible.model}
+        bind:value={endpoint.model}
         placeholder="Type the exact model name"
       />
       <TextField
         label="Temperature"
-        bind:value={settings.compatible.temperature}
+        bind:value={endpoint.temperature}
         placeholder={MODEL_DECIDES}
       />
     {/if}

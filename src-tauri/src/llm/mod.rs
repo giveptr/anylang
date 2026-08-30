@@ -261,7 +261,7 @@ pub async fn build(settings: &Settings, tuning: &Tuning) -> Result<Box<dyn Model
             ))
         }
         Provider::Compatible => {
-            let it = &settings.compatible;
+            let it = settings.endpoint();
             Ok(Box::new(OpenAiCompatible::new(
                 client,
                 needed(&it.base_url, "The endpoint")?,

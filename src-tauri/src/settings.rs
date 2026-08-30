@@ -4,6 +4,7 @@ use crate::tuning::{self, Tuning};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -64,10 +65,11 @@ pub struct Endpoint {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub using: Provider,
+    pub preset: String,
     pub gemini: Sampled,
     pub vertex: Account,
     pub claude: Keyed,
-    pub compatible: Endpoint,
+    pub endpoints: BTreeMap<String, Endpoint>,
     pub lines_per_request: u32,
     pub parallel_requests: u32,
 }
@@ -76,10 +78,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             using: Provider::default(),
+            preset: String::new(),
             gemini: Sampled::default(),
             vertex: Account::default(),
             claude: Keyed::default(),
-            compatible: Endpoint::default(),
+            endpoints: BTreeMap::default(),
             lines_per_request: tuning::LINES_PER_REQUEST,
             parallel_requests: tuning::PARALLEL_REQUESTS,
         }
@@ -87,6 +90,13 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoints
+            .get(&self.preset)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn tuning(&self) -> Tuning {
         Tuning {
             lines_per_request: (self.lines_per_request as usize).max(1),

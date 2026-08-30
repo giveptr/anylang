@@ -244,10 +244,11 @@ export type Seeking = {
 
 export type Settings = {
 	using: Provider,
+	preset: string,
 	gemini: Sampled,
 	vertex: Account,
 	claude: Keyed,
-	compatible: Endpoint,
+	endpoints: { [key in string]: Endpoint },
 	linesPerRequest: number,
 	parallelRequests: number,
 };
