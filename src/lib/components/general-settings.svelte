@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Check } from '@lucide/svelte';
   import { onDestroy, onMount } from 'svelte';
   import { commands, type Settings } from '$lib/bindings';
   import { caught } from '$lib/save';
@@ -10,6 +11,8 @@
   let settings = $state<Settings | null>(null);
   let saved = $state('');
   let problem = $state('');
+  let trying = $state(false);
+  let worked = $state(false);
   let waiting: Settings | null = null;
 
   const MODEL_DECIDES = 'Leave empty to let the model decide';
@@ -25,6 +28,22 @@
       model: firstModel(id),
       temperature: '',
     };
+  }
+
+  async function probe() {
+    const held = settings;
+    if (!held || trying) return;
+
+    trying = true;
+    worked = false;
+    problem = '';
+    const result = await caught(() =>
+      commands.trySettings($state.snapshot(held)),
+    );
+    trying = false;
+
+    if (result.status === 'error') problem = result.error;
+    else worked = true;
   }
 
   function choose(id: string) {
@@ -60,6 +79,7 @@
     const snapshot = settings && $state.snapshot(settings);
     if (!snapshot) return;
 
+    worked = false;
     if (!snapshot.linesPerRequest || !snapshot.parallelRequests) return;
 
     const now = JSON.stringify(snapshot);
@@ -92,7 +112,24 @@
 <div class="flex flex-col gap-5">
   {#if settings}
     <div class="flex flex-col gap-1.5">
-      <span class="text-sm font-medium">Provider</span>
+      <div class="flex items-baseline justify-between">
+        <span class="text-sm font-medium">Provider</span>
+        <button
+          type="button"
+          onclick={probe}
+          disabled={trying}
+          class="flex items-center gap-1.5 text-[11px] font-medium text-ink-soft transition-colors hover:text-ink disabled:text-ink-faint"
+        >
+          {#if trying}
+            <span
+              class="size-3 animate-spin rounded-full border border-accent-wash border-t-accent"
+            ></span>
+          {:else if worked}
+            <Check class="size-3 text-done" />
+          {/if}
+          Test the connection
+        </button>
+      </div>
       <Picker value={chosen} onpick={choose} {options} searchable={false} />
     </div>
 

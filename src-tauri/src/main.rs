@@ -64,6 +64,7 @@ fn build_specta() -> tauri_specta::Builder<tauri::Wry> {
             commands::save_entry,
             commands::load_settings,
             commands::save_settings,
+            commands::try_settings,
         ])
         .events(collect_events![
             events::FileStarted,

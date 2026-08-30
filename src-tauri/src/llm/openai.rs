@@ -1,10 +1,11 @@
+use crate::cancel::Cancel;
 use crate::llm::{
     CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
-    exchange, finish,
+    exchange, finish, knocked,
 };
 use anyhow::Result;
-use reqwest::Client;
 use reqwest::header::AUTHORIZATION;
+use reqwest::{Client, RequestBuilder};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -27,21 +28,27 @@ impl OpenAiCompatible {
     ) -> Self {
         Self {
             client,
-            url: endpoint(&url),
+            url: base(&url),
             api_key,
             model,
             temperature,
             shaping: Shaping::default(),
         }
     }
+
+    fn keyed(&self, outgoing: RequestBuilder) -> RequestBuilder {
+        outgoing.header(AUTHORIZATION, format!("Bearer {}", self.api_key))
+    }
+
+    fn at(&self, path: &str) -> String {
+        format!("{}/{path}", self.url)
+    }
 }
 
 impl Speaks for OpenAiCompatible {
     async fn call(&self, request: Request<'_>) -> Result<Generation, CallError> {
         let outgoing = self
-            .client
-            .post(&self.url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
+            .keyed(self.client.post(self.at("chat/completions")))
             .json(&body(
                 &self.model,
                 request.system,
@@ -54,16 +61,14 @@ impl Speaks for OpenAiCompatible {
 
         payload.into_generation()
     }
+
+    async fn reach(&self, cancel: &Cancel) -> Result<(), CallError> {
+        knocked(self.keyed(self.client.get(self.at("models"))), cancel).await
+    }
 }
 
-fn endpoint(url: &str) -> String {
-    let trimmed = url.trim().trim_end_matches('/');
-
-    if trimmed.ends_with("/chat/completions") {
-        return trimmed.to_string();
-    }
-
-    format!("{trimmed}/chat/completions")
+fn base(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
 }
 
 fn body(model: &str, system: &str, user: &str, temperature: Option<f32>, shaped: bool) -> Value {
@@ -157,18 +162,26 @@ struct Message {
 mod tests {
     use super::*;
     #[test]
-    fn the_chat_suffix_is_added_exactly_once() {
-        for base in [
+    fn what_is_kept_is_the_base_every_path_hangs_off() {
+        for pasted in [
             "https://api.example.com/v1",
             "https://api.example.com/v1/",
-            "https://api.example.com/v1/chat/completions",
             " https://api.example.com/v1 ",
         ] {
             assert_eq!(
-                endpoint(base),
-                "https://api.example.com/v1/chat/completions"
+                base(pasted),
+                "https://api.example.com/v1",
+                "a stray space or a trailing slash is how one address looks coming off a \
+                 clipboard, and both hang their paths in the same place"
             );
         }
+
+        assert_eq!(
+            base("https://api.example.com/v1/chat/completions"),
+            "https://api.example.com/v1/chat/completions",
+            "a URL that is not the base is a different address, and rewriting it quietly would \
+             leave the reader looking at a setting nobody typed"
+        );
     }
 
     #[test]

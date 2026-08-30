@@ -480,6 +480,10 @@ mod tests {
                 usage: Usage::default(),
             })
         }
+
+        async fn reach(&self, _cancel: &Cancel) -> Result<(), CallError> {
+            Ok(())
+        }
     }
 
     fn units(count: usize) -> Vec<TranslationUnit> {

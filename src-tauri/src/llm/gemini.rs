@@ -1,11 +1,12 @@
+use crate::cancel::Cancel;
 use crate::llm::{
     CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
-    exchange, finish,
+    exchange, finish, knocked,
 };
 use anyhow::{Context, Result};
 use gcp_auth::{CustomServiceAccount, TokenProvider};
-use reqwest::Client;
 use reqwest::header::AUTHORIZATION;
+use reqwest::{Client, RequestBuilder};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -74,31 +75,22 @@ impl Gemini {
         })
     }
 
-    fn endpoint(&self) -> String {
+    fn named(&self) -> String {
         match &self.auth {
             Auth::ApiKey(_) => format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+                "https://generativelanguage.googleapis.com/v1beta/models/{}",
                 self.model
             ),
             Auth::ServiceAccount { project, .. } => format!(
-                "https://aiplatform.us.rep.googleapis.com/v1/projects/{project}/locations/us/publishers/google/models/{}:generateContent",
+                "https://aiplatform.us.rep.googleapis.com/v1/projects/{project}/locations/us/publishers/google/models/{}",
                 self.model
             ),
         }
     }
-}
 
-impl Speaks for Gemini {
-    async fn call(&self, request: Request<'_>) -> Result<Generation, CallError> {
-        let mut outgoing = self.client.post(self.endpoint()).json(&body(
-            request.system,
-            request.user,
-            self.temperature,
-            self.shaping.wanted(),
-        ));
-
-        match &self.auth {
-            Auth::ApiKey(key) => outgoing = outgoing.header("x-goog-api-key", key),
+    async fn signed(&self, outgoing: RequestBuilder) -> Result<RequestBuilder, CallError> {
+        Ok(match &self.auth {
+            Auth::ApiKey(key) => outgoing.header("x-goog-api-key", key),
             Auth::ServiceAccount { account, .. } => {
                 let token = account
                     .token(&[CLOUD_PLATFORM_SCOPE])
@@ -106,13 +98,32 @@ impl Speaks for Gemini {
                     .map_err(|error| {
                         CallError::Retryable(format!("could not fetch an access token: {error}"))
                     })?;
-                outgoing = outgoing.header(AUTHORIZATION, format!("Bearer {}", token.as_str()));
+                outgoing.header(AUTHORIZATION, format!("Bearer {}", token.as_str()))
             }
-        }
+        })
+    }
+}
 
-        let payload: Response = exchange(outgoing, request.cancel, &self.shaping).await?;
+impl Speaks for Gemini {
+    async fn call(&self, request: Request<'_>) -> Result<Generation, CallError> {
+        let outgoing = self
+            .client
+            .post(format!("{}:generateContent", self.named()))
+            .json(&body(
+                request.system,
+                request.user,
+                self.temperature,
+                self.shaping.wanted(),
+            ));
+
+        let payload: Response =
+            exchange(self.signed(outgoing).await?, request.cancel, &self.shaping).await?;
 
         payload.into_generation()
+    }
+
+    async fn reach(&self, cancel: &Cancel) -> Result<(), CallError> {
+        knocked(self.signed(self.client.get(self.named())).await?, cancel).await
     }
 }
 

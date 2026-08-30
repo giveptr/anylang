@@ -26,6 +26,15 @@ impl Default for Tuning {
     }
 }
 
+impl Tuning {
+    pub fn probing(self) -> Self {
+        Self {
+            request_timeout: Duration::from_secs(15),
+            ..self
+        }
+    }
+}
+
 #[cfg(test)]
 impl Tuning {
     pub fn instant() -> Self {

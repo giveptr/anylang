@@ -11,7 +11,7 @@ use crate::settings::Settings;
 use crate::tuning::Tuning;
 use anyhow::{Context, Result, anyhow, bail};
 use futures::future::{BoxFuture, FutureExt};
-use reqwest::{Client, RequestBuilder, StatusCode};
+use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -164,6 +164,8 @@ impl fmt::Display for CallError {
 pub trait Model: Send + Sync {
     fn generate<'a>(&'a self, request: Request<'a>)
     -> BoxFuture<'a, Result<Generation, CallError>>;
+
+    fn reachable<'a>(&'a self, cancel: &'a Cancel) -> BoxFuture<'a, Result<(), CallError>>;
 }
 
 pub trait Speaks: Send + Sync {
@@ -171,6 +173,8 @@ pub trait Speaks: Send + Sync {
         &self,
         request: Request<'_>,
     ) -> impl Future<Output = Result<Generation, CallError>> + Send;
+
+    fn reach(&self, cancel: &Cancel) -> impl Future<Output = Result<(), CallError>> + Send;
 }
 
 impl<T: Speaks> Model for T {
@@ -180,6 +184,41 @@ impl<T: Speaks> Model for T {
     ) -> BoxFuture<'a, Result<Generation, CallError>> {
         self.call(request).boxed()
     }
+
+    fn reachable<'a>(&'a self, cancel: &'a Cancel) -> BoxFuture<'a, Result<(), CallError>> {
+        self.reach(cancel).boxed()
+    }
+}
+
+async fn knocked(outgoing: RequestBuilder, cancel: &Cancel) -> Result<(), CallError> {
+    sent(outgoing, cancel, None).await.map(|_| ())
+}
+
+async fn sent(
+    outgoing: RequestBuilder,
+    cancel: &Cancel,
+    shaping: Option<&Shaping>,
+) -> Result<Response, CallError> {
+    let response = until_stopped(cancel, outgoing.send())
+        .await?
+        .map_err(transport_error)?;
+
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let body = until_stopped(cancel, response.text())
+        .await?
+        .unwrap_or_default();
+
+    if let Some(shaping) = shaping
+        && malformed(status, &body)
+    {
+        shaping.give_up();
+    }
+
+    Err(classify_status(status, &body))
 }
 
 struct Finish<'a> {
@@ -218,7 +257,7 @@ fn http_client(tuning: &Tuning) -> Result<Client> {
 fn needed(value: &str, what: &str) -> Result<String> {
     let value = value.trim();
     if value.is_empty() {
-        bail!("{what} is empty. Fill it in under Settings.");
+        bail!("{what} is empty.");
     }
 
     Ok(value.to_string())
@@ -278,22 +317,7 @@ async fn exchange<T: DeserializeOwned>(
     cancel: &Cancel,
     shaping: &Shaping,
 ) -> Result<T, CallError> {
-    let response = until_stopped(cancel, outgoing.send())
-        .await?
-        .map_err(transport_error)?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body = until_stopped(cancel, response.text())
-            .await?
-            .unwrap_or_default();
-
-        if malformed(status, &body) {
-            shaping.give_up();
-        }
-
-        return Err(classify_status(status, &body));
-    }
+    let response = sent(outgoing, cancel, Some(shaping)).await?;
 
     until_stopped(cancel, response.json())
         .await?
@@ -402,7 +426,8 @@ fn classify_status(status: StatusCode, body: &str) -> CallError {
             "HTTP {status} - authentication failed, check the API key\n{snippet}"
         )),
         StatusCode::NOT_FOUND => CallError::Fatal(anyhow!(
-            "HTTP {status} - model or endpoint not found, check the model name\n{snippet}"
+            "HTTP {status} - model or endpoint not found, check the model name and the base \
+             URL\n{snippet}"
         )),
         _ => CallError::Retryable(format!("HTTP {status} - {snippet}")),
     }
@@ -447,6 +472,10 @@ mod tests {
                 usage: Usage::default(),
             })
         }
+
+        async fn reach(&self, _cancel: &Cancel) -> Result<(), CallError> {
+            Ok(())
+        }
     }
 
     struct Grumbling {
@@ -466,6 +495,10 @@ mod tests {
                 truncated: false,
                 usage: Usage::default(),
             })
+        }
+
+        async fn reach(&self, _cancel: &Cancel) -> Result<(), CallError> {
+            Ok(())
         }
     }
 

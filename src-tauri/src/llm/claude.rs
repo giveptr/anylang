@@ -1,9 +1,10 @@
+use crate::cancel::Cancel;
 use crate::llm::{
     CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
-    exchange, finish,
+    exchange, finish, knocked,
 };
 use anyhow::Result;
-use reqwest::Client;
+use reqwest::{Client, RequestBuilder};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -54,16 +55,20 @@ async fn cap(client: &Client, model: &str, api_key: &str) -> Option<u32> {
     Some(found)
 }
 
+fn listing(client: &Client, model: &str, api_key: &str) -> RequestBuilder {
+    client
+        .get(format!("{MODELS_URL}/{model}"))
+        .header("x-api-key", api_key)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+}
+
 async fn fetch_cap(client: &Client, model: &str, api_key: &str) -> Option<u32> {
     #[derive(Deserialize)]
     struct Listed {
         max_tokens: Option<u32>,
     }
 
-    client
-        .get(format!("{MODELS_URL}/{model}"))
-        .header("x-api-key", api_key)
-        .header("anthropic-version", ANTHROPIC_VERSION)
+    listing(client, model, api_key)
         .send()
         .await
         .ok()?
@@ -93,6 +98,10 @@ impl Speaks for Claude {
         let payload: Response = exchange(outgoing, request.cancel, &self.shaping).await?;
 
         payload.into_generation()
+    }
+
+    async fn reach(&self, cancel: &Cancel) -> Result<(), CallError> {
+        knocked(listing(&self.client, &self.model, &self.api_key), cancel).await
     }
 }
 

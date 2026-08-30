@@ -39,6 +39,7 @@ export const commands = {
 	saveEntry: (gameDir: string, file: string, id: number, translation: string | null) => typedError<null, string>(__TAURI_INVOKE("save_entry", { gameDir, file, id, translation })),
 	loadSettings: () => typedError<Settings, string>(__TAURI_INVOKE("load_settings")),
 	saveSettings: (settings: Settings) => typedError<null, string>(__TAURI_INVOKE("save_settings", { settings })),
+	trySettings: (settings: Settings) => typedError<null, string>(__TAURI_INVOKE("try_settings", { settings })),
 };
 
 /** Events */

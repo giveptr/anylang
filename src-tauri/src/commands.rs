@@ -1,4 +1,4 @@
-use crate::cancel::{Runs, Seeker, Solo};
+use crate::cancel::{Cancel, Runs, Seeker, Solo};
 use crate::engine::forget;
 use crate::engine::pictures::Shot;
 use crate::events::Ui;
@@ -417,6 +417,20 @@ pub async fn load_settings(app: AppHandle) -> Reply<Settings> {
     settings::load()
         .await
         .map_err(blamed(&app, Source::Session))
+}
+
+#[tracing::instrument(level = "info", name = "try_settings", skip_all)]
+#[tauri::command]
+#[specta::specta]
+pub async fn try_settings(settings: Settings) -> Reply<()> {
+    let model = llm::build(&settings, &settings.tuning().probing())
+        .await
+        .map_err(readable)?;
+
+    model
+        .reachable(&Cancel::default())
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tracing::instrument(level = "info", name = "save_settings", skip_all)]
