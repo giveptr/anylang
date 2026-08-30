@@ -14,10 +14,12 @@ use futures::future::{BoxFuture, FutureExt};
 use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use specta::Type;
 use std::fmt;
 use std::future::Future;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::{self, MissedTickBehavior};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -28,6 +30,79 @@ pub enum Provider {
     Vertex,
     Claude,
     Compatible,
+}
+
+pub const ANSWERS: &str = "items";
+
+#[derive(Debug, Clone, Copy)]
+pub enum Spelling {
+    Plain,
+    Closed,
+    Shouted,
+}
+
+fn kind(name: &str, spelling: Spelling) -> Value {
+    match spelling {
+        Spelling::Shouted => Value::String(name.to_uppercase()),
+        Spelling::Plain | Spelling::Closed => Value::String(name.to_string()),
+    }
+}
+
+fn shut(mut object: Value, closed: bool) -> Value {
+    if closed {
+        object["additionalProperties"] = Value::Bool(false);
+    }
+
+    object
+}
+
+pub fn answer_schema(spelling: Spelling) -> Value {
+    let closed = matches!(spelling, Spelling::Closed);
+
+    let line = shut(
+        json!({
+            "type": kind("object", spelling),
+            "properties": {
+                "id": { "type": kind("integer", spelling) },
+                "translation": { "type": kind("string", spelling) },
+            },
+            "required": ["id", "translation"],
+        }),
+        closed,
+    );
+
+    shut(
+        json!({
+            "type": kind("object", spelling),
+            "properties": {
+                ANSWERS: {
+                    "type": kind("array", spelling),
+                    "items": line,
+                },
+            },
+            "required": [ANSWERS],
+        }),
+        closed,
+    )
+}
+
+#[derive(Debug)]
+pub struct Shaping(AtomicBool);
+
+impl Default for Shaping {
+    fn default() -> Self {
+        Self(AtomicBool::new(true))
+    }
+}
+
+impl Shaping {
+    pub fn wanted(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn give_up(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 pub struct Request<'a> {
@@ -201,6 +276,7 @@ pub async fn build(settings: &Settings, tuning: &Tuning) -> Result<Box<dyn Model
 async fn exchange<T: DeserializeOwned>(
     outgoing: RequestBuilder,
     cancel: &Cancel,
+    shaping: &Shaping,
 ) -> Result<T, CallError> {
     let response = until_stopped(cancel, outgoing.send())
         .await?
@@ -211,6 +287,11 @@ async fn exchange<T: DeserializeOwned>(
         let body = until_stopped(cancel, response.text())
             .await?
             .unwrap_or_default();
+
+        if malformed(status, &body) {
+            shaping.give_up();
+        }
+
         return Err(classify_status(status, &body));
     }
 
@@ -294,6 +375,13 @@ fn overflows(status: StatusCode, body: &str) -> bool {
     ]
     .iter()
     .any(|mark| lowered.contains(mark))
+}
+
+fn malformed(status: StatusCode, body: &str) -> bool {
+    matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+    ) && !overflows(status, body)
 }
 
 fn classify_status(status: StatusCode, body: &str) -> CallError {
@@ -596,5 +684,35 @@ mod tests {
             ),
             "a refusal that says nothing about length must not be read as one"
         );
+    }
+
+    #[test]
+    fn a_request_the_server_calls_malformed_is_the_one_that_stops_the_shaping() {
+        assert!(malformed(
+            StatusCode::BAD_REQUEST,
+            "unknown field response_format"
+        ));
+        assert!(malformed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "body -> response_format: extra fields not permitted"
+        ));
+        assert!(
+            !malformed(
+                StatusCode::BAD_REQUEST,
+                "This model's maximum context length is 4096 tokens"
+            ),
+            "a batch too long for the model says nothing about the schema, and giving the \
+             schema up over it would leave the run guessing for no reason"
+        );
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::UNAUTHORIZED,
+        ] {
+            assert!(
+                !malformed(status, "busy"),
+                "a request worth sending again is not a request the server could not read"
+            );
+        }
     }
 }

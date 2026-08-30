@@ -1,4 +1,7 @@
-use crate::llm::{CallError, Finish, Generation, Request, Speaks, Usage, exchange, finish};
+use crate::llm::{
+    CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
+    exchange, finish,
+};
 use anyhow::{Context, Result};
 use gcp_auth::{CustomServiceAccount, TokenProvider};
 use reqwest::Client;
@@ -22,6 +25,7 @@ pub struct Gemini {
     auth: Auth,
     model: String,
     temperature: f32,
+    shaping: Shaping,
 }
 
 impl Gemini {
@@ -31,6 +35,7 @@ impl Gemini {
             auth: Auth::ApiKey(api_key),
             model,
             temperature,
+            shaping: Shaping::default(),
         }
     }
 
@@ -60,6 +65,7 @@ impl Gemini {
             },
             model,
             temperature,
+            shaping: Shaping::default(),
         })
     }
 
@@ -83,6 +89,7 @@ impl Speaks for Gemini {
             request.system,
             request.user,
             self.temperature,
+            self.shaping.wanted(),
         ));
 
         match &self.auth {
@@ -98,31 +105,19 @@ impl Speaks for Gemini {
             }
         }
 
-        let payload: Response = exchange(outgoing, request.cancel).await?;
+        let payload: Response = exchange(outgoing, request.cancel, &self.shaping).await?;
 
         payload.into_generation()
     }
 }
 
-fn body(system: &str, user: &str, temperature: f32) -> Value {
-    json!({
+fn body(system: &str, user: &str, temperature: f32, shaped: bool) -> Value {
+    let mut asked = json!({
         "systemInstruction": { "parts": [{ "text": system }] },
         "contents": [{ "role": "user", "parts": [{ "text": user }] }],
         "generationConfig": {
             "temperature": temperature,
             "candidateCount": 1,
-            "responseMimeType": "application/json",
-            "responseSchema": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "id": { "type": "INTEGER" },
-                        "translation": { "type": "STRING" },
-                    },
-                    "required": ["id", "translation"],
-                },
-            },
         },
         "safetySettings": [
             { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
@@ -130,7 +125,14 @@ fn body(system: &str, user: &str, temperature: f32) -> Value {
             { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
             { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" },
         ],
-    })
+    });
+
+    if shaped {
+        asked["generationConfig"]["responseMimeType"] = json!("application/json");
+        asked["generationConfig"]["responseSchema"] = answer_schema(Spelling::Shouted);
+    }
+
+    asked
 }
 
 #[derive(Debug, Deserialize)]

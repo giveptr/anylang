@@ -1,4 +1,7 @@
-use crate::llm::{CallError, Finish, Generation, Request, Speaks, Usage, exchange, finish};
+use crate::llm::{
+    CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
+    exchange, finish,
+};
 use anyhow::Result;
 use reqwest::Client;
 use reqwest::header::AUTHORIZATION;
@@ -11,6 +14,7 @@ pub struct OpenAiCompatible {
     api_key: String,
     model: String,
     temperature: f32,
+    shaping: Shaping,
 }
 
 impl OpenAiCompatible {
@@ -27,6 +31,7 @@ impl OpenAiCompatible {
             api_key,
             model,
             temperature,
+            shaping: Shaping::default(),
         }
     }
 }
@@ -42,9 +47,10 @@ impl Speaks for OpenAiCompatible {
                 request.system,
                 request.user,
                 self.temperature,
+                self.shaping.wanted(),
             ));
 
-        let payload: Response = exchange(outgoing, request.cancel).await?;
+        let payload: Response = exchange(outgoing, request.cancel, &self.shaping).await?;
 
         payload.into_generation()
     }
@@ -60,15 +66,27 @@ fn endpoint(url: &str) -> String {
     format!("{trimmed}/chat/completions")
 }
 
-fn body(model: &str, system: &str, user: &str, temperature: f32) -> Value {
-    json!({
+fn body(model: &str, system: &str, user: &str, temperature: f32, shaped: bool) -> Value {
+    let mut asked = json!({
         "model": model,
         "temperature": temperature,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
-    })
+    });
+
+    if shaped {
+        asked["response_format"] = json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "translations",
+                "schema": answer_schema(Spelling::Plain),
+            },
+        });
+    }
+
+    asked
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +166,22 @@ mod tests {
                 "https://api.example.com/v1/chat/completions"
             );
         }
+    }
+
+    #[test]
+    fn the_endpoint_is_told_the_shape_the_answer_must_take() {
+        let payload = body("gpt", "system", "user", 0.8, true);
+
+        assert_eq!(
+            payload["response_format"]["json_schema"]["schema"],
+            answer_schema(Spelling::Plain),
+            "an endpoint left to guess hands back the source key it was given, and a batch \
+             answered under the wrong key is fifty lines paid for and thrown away"
+        );
+
+        let plain = body("gpt", "system", "user", 0.8, false);
+        assert!(plain.get("response_format").is_none());
+        assert_eq!(plain["messages"][1]["content"], json!("user"));
     }
 
     fn parse(value: Value) -> Result<Generation, CallError> {

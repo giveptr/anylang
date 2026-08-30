@@ -155,10 +155,12 @@ fn join_names<T: AsRef<str>>(names: &[T]) -> String {
 
 const OUTPUT_CONTRACT: &str = r#"--- OUTPUT CONTRACT ---
 - The input is a JSON array of objects with "id" (integer) and "text" (string).
-- Return one object per input object: the same "id", plus "translation" (string).
+- Return a JSON object with one key, "items": an array holding one object per input object.
+- Each object in "items" carries the same "id", plus "translation" (string). The translated
+  words go under "translation". An object that answers with "text" is thrown away unread.
 - Return exactly as many objects as the input has. Never merge, split, reorder or drop items.
 - Translate only the value of "text". Never translate or invent ids.
-- Output only the JSON array. No markdown fences, no comments, no explanation."#;
+- Output only the JSON object. No markdown fences, no comments, no explanation."#;
 
 pub fn system_instruction(engine: &dyn Engine, project: &Project) -> String {
     let style = &project.style;

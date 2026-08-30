@@ -1,4 +1,7 @@
-use crate::llm::{CallError, Finish, Generation, Request, Speaks, Usage, exchange, finish};
+use crate::llm::{
+    CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
+    exchange, finish,
+};
 use anyhow::Result;
 use reqwest::Client;
 use serde::Deserialize;
@@ -18,6 +21,7 @@ pub struct Claude {
     api_key: String,
     model: String,
     max_tokens: u32,
+    shaping: Shaping,
 }
 
 impl Claude {
@@ -32,6 +36,7 @@ impl Claude {
             api_key,
             model,
             max_tokens,
+            shaping: Shaping::default(),
         }
     }
 }
@@ -82,21 +87,33 @@ impl Speaks for Claude {
                 self.max_tokens,
                 request.system,
                 request.user,
+                self.shaping.wanted(),
             ));
 
-        let payload: Response = exchange(outgoing, request.cancel).await?;
+        let payload: Response = exchange(outgoing, request.cancel, &self.shaping).await?;
 
         payload.into_generation()
     }
 }
 
-fn body(model: &str, max_tokens: u32, system: &str, user: &str) -> Value {
-    json!({
+fn body(model: &str, max_tokens: u32, system: &str, user: &str, shaped: bool) -> Value {
+    let mut asked = json!({
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{ "role": "user", "content": user }],
-    })
+    });
+
+    if shaped {
+        asked["output_config"] = json!({
+            "format": {
+                "type": "json_schema",
+                "schema": answer_schema(Spelling::Closed),
+            },
+        });
+    }
+
+    asked
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,7 +283,7 @@ mod tests {
 
     #[test]
     fn a_request_carries_the_prompt_and_none_of_the_knobs_newer_models_refuse() {
-        let payload = body("claude-opus-5", MAX_TOKENS, "system", "user");
+        let payload = body("claude-opus-5", MAX_TOKENS, "system", "user", true);
 
         assert_eq!(payload["model"], json!("claude-opus-5"));
         assert_eq!(payload["max_tokens"], json!(MAX_TOKENS));
@@ -280,5 +297,21 @@ mod tests {
             "a newer model turns a whole request down for carrying a knob it no longer takes, so \
              what the reader set has to be left out of the call rather than sent and ignored"
         );
+        assert_eq!(
+            payload["output_config"]["format"]["schema"],
+            answer_schema(Spelling::Closed)
+        );
+    }
+
+    #[test]
+    fn a_model_that_will_not_take_the_schema_is_still_asked_the_question() {
+        let payload = body("claude-opus-5", MAX_TOKENS, "system", "user", false);
+
+        assert!(
+            payload.get("output_config").is_none(),
+            "an older model answers the contract in the prompt but turns the whole request down \
+             for the schema, so dropping the schema is what keeps it translating at all"
+        );
+        assert_eq!(payload["messages"][0]["content"], json!("user"));
     }
 }

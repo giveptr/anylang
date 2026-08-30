@@ -268,6 +268,7 @@ fn salvage_objects(text: &str) -> Vec<TranslatedItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::ANSWERS;
 
     fn ids(outcome: &ParseOutcome) -> Vec<u32> {
         outcome.items.iter().map(|item| item.id).collect()
@@ -309,6 +310,21 @@ mod tests {
             vec![1],
             "models like to greet you and fence their code, and throwing the whole answer away \
              over that would pay for the batch twice"
+        );
+    }
+
+    #[test]
+    fn the_shape_the_model_is_held_to_is_the_shape_this_reads() {
+        let raw = format!(
+            r#"{{"{ANSWERS}": [{{"id": 0, "translation": "\u3053\u3093\u306b\u3061\u306f"}}]}}"#
+        );
+        let outcome = parse_items(&raw).unwrap();
+
+        assert_eq!(outcome.quality, ParseQuality::Clean);
+        assert_eq!(
+            outcome.items[0].translation, "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}",
+            "every provider holds the model to this schema, so a reader that could not take it \
+             back would fail on the one answer the run asks for"
         );
     }
 
