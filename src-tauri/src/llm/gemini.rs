@@ -24,12 +24,17 @@ pub struct Gemini {
     client: Client,
     auth: Auth,
     model: String,
-    temperature: f32,
+    temperature: Option<f32>,
     shaping: Shaping,
 }
 
 impl Gemini {
-    pub fn api_key(client: Client, model: String, api_key: String, temperature: f32) -> Self {
+    pub fn api_key(
+        client: Client,
+        model: String,
+        api_key: String,
+        temperature: Option<f32>,
+    ) -> Self {
         Self {
             client,
             auth: Auth::ApiKey(api_key),
@@ -43,7 +48,7 @@ impl Gemini {
         client: Client,
         credentials: &Path,
         model: String,
-        temperature: f32,
+        temperature: Option<f32>,
     ) -> Result<Self> {
         let raw = tokio::fs::read_to_string(credentials)
             .await
@@ -111,12 +116,11 @@ impl Speaks for Gemini {
     }
 }
 
-fn body(system: &str, user: &str, temperature: f32, shaped: bool) -> Value {
+fn body(system: &str, user: &str, temperature: Option<f32>, shaped: bool) -> Value {
     let mut asked = json!({
         "systemInstruction": { "parts": [{ "text": system }] },
         "contents": [{ "role": "user", "parts": [{ "text": user }] }],
         "generationConfig": {
-            "temperature": temperature,
             "candidateCount": 1,
         },
         "safetySettings": [
@@ -126,6 +130,10 @@ fn body(system: &str, user: &str, temperature: f32, shaped: bool) -> Value {
             { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" },
         ],
     });
+
+    if let Some(temperature) = temperature {
+        asked["generationConfig"]["temperature"] = json!(temperature);
+    }
 
     if shaped {
         asked["generationConfig"]["responseMimeType"] = json!("application/json");

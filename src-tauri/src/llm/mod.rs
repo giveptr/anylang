@@ -234,7 +234,7 @@ pub async fn build(settings: &Settings, tuning: &Tuning) -> Result<Box<dyn Model
                 client,
                 needed(&it.model, "The model name")?,
                 needed(&it.api_key, "The Gemini API key")?,
-                it.temperature.heated(),
+                it.temperature.heated()?,
             )))
         }
         Provider::Vertex => {
@@ -244,7 +244,7 @@ pub async fn build(settings: &Settings, tuning: &Tuning) -> Result<Box<dyn Model
                     client,
                     Path::new(&needed(&it.credentials, "The Vertex service account file")?),
                     needed(&it.model, "The model name")?,
-                    it.temperature.heated(),
+                    it.temperature.heated()?,
                 )
                 .await?,
             ))
@@ -267,7 +267,7 @@ pub async fn build(settings: &Settings, tuning: &Tuning) -> Result<Box<dyn Model
                 needed(&it.base_url, "The endpoint")?,
                 needed(&it.model, "The model name")?,
                 needed(&it.api_key, "The API key")?,
-                it.temperature.heated(),
+                it.temperature.heated()?,
             )))
         }
     }

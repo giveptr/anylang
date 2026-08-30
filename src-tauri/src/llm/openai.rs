@@ -13,7 +13,7 @@ pub struct OpenAiCompatible {
     url: String,
     api_key: String,
     model: String,
-    temperature: f32,
+    temperature: Option<f32>,
     shaping: Shaping,
 }
 
@@ -23,7 +23,7 @@ impl OpenAiCompatible {
         url: String,
         model: String,
         api_key: String,
-        temperature: f32,
+        temperature: Option<f32>,
     ) -> Self {
         Self {
             client,
@@ -66,15 +66,18 @@ fn endpoint(url: &str) -> String {
     format!("{trimmed}/chat/completions")
 }
 
-fn body(model: &str, system: &str, user: &str, temperature: f32, shaped: bool) -> Value {
+fn body(model: &str, system: &str, user: &str, temperature: Option<f32>, shaped: bool) -> Value {
     let mut asked = json!({
         "model": model,
-        "temperature": temperature,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
     });
+
+    if let Some(temperature) = temperature {
+        asked["temperature"] = json!(temperature);
+    }
 
     if shaped {
         asked["response_format"] = json!({
@@ -170,7 +173,7 @@ mod tests {
 
     #[test]
     fn the_endpoint_is_told_the_shape_the_answer_must_take() {
-        let payload = body("gpt", "system", "user", 0.8, true);
+        let payload = body("gpt", "system", "user", Some(0.8), true);
 
         assert_eq!(
             payload["response_format"]["json_schema"]["schema"],
@@ -179,8 +182,15 @@ mod tests {
              answered under the wrong key is fifty lines paid for and thrown away"
         );
 
-        let plain = body("gpt", "system", "user", 0.8, false);
+        assert_eq!(payload["temperature"], json!(0.8f32));
+
+        let plain = body("gpt", "system", "user", None, false);
         assert!(plain.get("response_format").is_none());
+        assert!(
+            plain.get("temperature").is_none(),
+            "an endpoint that refuses sampling refuses the whole request over it, so a field \
+             left empty has to be left out rather than defaulted"
+        );
         assert_eq!(plain["messages"][1]["content"], json!("user"));
     }
 

@@ -1,7 +1,7 @@
 use crate::llm::Provider;
 use crate::store;
 use crate::tuning::{self, Tuning};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
@@ -9,23 +9,22 @@ use tokio::fs;
 
 const FILE: &str = "settings.json";
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
-pub struct Temperature(f32);
-
-impl Default for Temperature {
-    fn default() -> Self {
-        Self(tuning::TEMPERATURE)
-    }
-}
+pub struct Temperature(String);
 
 impl Temperature {
-    pub fn heated(self) -> f32 {
-        if self.0.is_finite() {
-            self.0.clamp(tuning::COOLEST, tuning::HOTTEST)
-        } else {
-            tuning::TEMPERATURE
+    pub fn heated(&self) -> Result<Option<f32>> {
+        let said = self.0.trim();
+        if said.is_empty() {
+            return Ok(None);
         }
+
+        said.parse::<f32>()
+            .ok()
+            .filter(|heat| heat.is_finite())
+            .map(Some)
+            .ok_or_else(|| anyhow!("{said} is not a temperature."))
     }
 }
 
@@ -41,7 +40,6 @@ pub struct Keyed {
 pub struct Sampled {
     pub api_key: String,
     pub model: String,
-    #[serde(default)]
     pub temperature: Temperature,
 }
 
@@ -50,7 +48,6 @@ pub struct Sampled {
 pub struct Account {
     pub credentials: String,
     pub model: String,
-    #[serde(default)]
     pub temperature: Temperature,
 }
 
@@ -60,7 +57,6 @@ pub struct Endpoint {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    #[serde(default)]
     pub temperature: Temperature,
 }
 
@@ -144,14 +140,23 @@ mod tests {
     }
 
     #[test]
-    fn a_temperature_no_model_would_accept_is_pulled_back_into_range() {
-        assert_eq!(Temperature(0.7).heated(), 0.7);
-        assert_eq!(Temperature(-1.0).heated(), tuning::COOLEST);
-        assert_eq!(Temperature(9.0).heated(), tuning::HOTTEST);
+    fn a_field_left_empty_lets_the_model_keep_its_own_default() {
+        assert_eq!(Temperature("0.7".to_string()).heated().unwrap(), Some(0.7));
         assert_eq!(
-            Temperature(f32::NAN).heated(),
-            tuning::TEMPERATURE,
-            "a number that is not one falls back to the default rather than to a bound"
+            Temperature::default().heated().unwrap(),
+            None,
+            "an endpoint that turns the whole request down for carrying a temperature has to \
+             be left alone, and no number says that"
+        );
+        assert!(
+            Temperature("inf".to_string()).heated().is_err(),
+            "a number that is not one reaches the endpoint as a null temperature, which is not \
+             what the reader typed and not what the model would have picked"
+        );
+        assert!(
+            Temperature("hot".to_string()).heated().is_err(),
+            "a word where a number belongs is a mistake worth naming, not one to drop on the \
+             floor and translate a whole game without"
         );
     }
 }

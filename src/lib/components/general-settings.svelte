@@ -4,9 +4,6 @@
   import { caught } from '$lib/save';
   import { firstModel, presetOf, presets } from '$lib/providers';
   import FileField from '$lib/components/file-field.svelte';
-  import TemperatureField, {
-    WARM,
-  } from '$lib/components/temperature-field.svelte';
   import Picker from '$lib/components/picker.svelte';
   import TextField from '$lib/components/text-field.svelte';
 
@@ -14,6 +11,8 @@
   let saved = $state('');
   let problem = $state('');
   let waiting: Settings | null = null;
+
+  const MODEL_DECIDES = 'Leave empty to let the model decide';
 
   const options = presets.map((one) => ({ value: one.id, label: one.label }));
   let chosen = $state('');
@@ -45,10 +44,6 @@
       if (loaded.using === 'compatible')
         loaded.compatible.model ||= firstModel(preset);
 
-      loaded.gemini.temperature ??= WARM;
-      loaded.vertex.temperature ??= WARM;
-      loaded.compatible.temperature ??= WARM;
-
       saved = JSON.stringify(loaded);
       settings = loaded;
       chosen = preset;
@@ -58,6 +53,7 @@
   $effect(() => {
     const snapshot = settings && $state.snapshot(settings);
     if (!snapshot) return;
+
     if (!snapshot.linesPerRequest || !snapshot.parallelRequests) return;
 
     const now = JSON.stringify(snapshot);
@@ -101,7 +97,11 @@
         bind:value={settings.gemini.model}
         placeholder="Type the exact model name"
       />
-      <TemperatureField bind:value={settings.gemini.temperature} />
+      <TextField
+        label="Temperature"
+        bind:value={settings.gemini.temperature}
+        placeholder={MODEL_DECIDES}
+      />
     {:else if settings.using === 'vertex'}
       <FileField
         label="Service account file"
@@ -116,7 +116,11 @@
         bind:value={settings.vertex.model}
         placeholder="Type the exact model name"
       />
-      <TemperatureField bind:value={settings.vertex.temperature} />
+      <TextField
+        label="Temperature"
+        bind:value={settings.vertex.temperature}
+        placeholder={MODEL_DECIDES}
+      />
     {:else if settings.using === 'claude'}
       <TextField label="API key" secret bind:value={settings.claude.apiKey} />
       <TextField
@@ -138,7 +142,11 @@
         bind:value={settings.compatible.model}
         placeholder="Type the exact model name"
       />
-      <TemperatureField bind:value={settings.compatible.temperature} />
+      <TextField
+        label="Temperature"
+        bind:value={settings.compatible.temperature}
+        placeholder={MODEL_DECIDES}
+      />
     {/if}
 
     <div class="grid grid-cols-2 gap-4 border-t border-line pt-5">

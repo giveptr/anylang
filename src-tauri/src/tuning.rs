@@ -2,9 +2,6 @@ use std::time::Duration;
 
 pub const LINES_PER_REQUEST: u32 = 50;
 pub const PARALLEL_REQUESTS: u32 = 20;
-pub const TEMPERATURE: f32 = 0.8;
-pub const COOLEST: f32 = 0.0;
-pub const HOTTEST: f32 = 2.0;
 
 #[derive(Debug, Clone)]
 pub struct Tuning {

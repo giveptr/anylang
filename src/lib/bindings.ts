@@ -55,7 +55,7 @@ export const events = {
 export type Account = {
 	credentials: string,
 	model: string,
-	temperature?: Temperature,
+	temperature: Temperature,
 };
 
 export type BatchDone = {
@@ -74,7 +74,7 @@ export type Endpoint = {
 	baseUrl: string,
 	apiKey: string,
 	model: string,
-	temperature?: Temperature,
+	temperature: Temperature,
 };
 
 export type Entry = {
@@ -233,7 +233,7 @@ export type RunState = {
 export type Sampled = {
 	apiKey: string,
 	model: string,
-	temperature?: Temperature,
+	temperature: Temperature,
 };
 
 export type Seeking = {
@@ -304,7 +304,7 @@ export type Tally = {
 	total: number,
 };
 
-export type Temperature = number | null;
+export type Temperature = string;
 
 export type Tweaks = { kind: "none" } | {
 	kind: "renpy",
