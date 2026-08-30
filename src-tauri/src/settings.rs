@@ -122,8 +122,7 @@ pub async fn load() -> Result<Settings> {
         return Ok(Settings::default());
     };
 
-    serde_json::from_str(&raw)
-        .with_context(|| format!("{} is not readable. Fix or delete it", file.display()))
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
 pub async fn save(settings: &Settings) -> Result<()> {
