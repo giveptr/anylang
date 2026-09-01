@@ -1,8 +1,10 @@
 use crate::engine::fonts::Fonts;
-use crate::engine::pictures::key_of;
+use crate::engine::pictures::{key_of, packed_in};
 use crate::engine::renpy::{GAME_DIR, TL_DIR, archive, slug};
 use crate::engine::{Extra, Font, Install, fonts as face};
 use crate::scope::slashed;
+use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -65,6 +67,17 @@ fn packed(game_dir: &Path, store: &Path) -> (Vec<Font>, Vec<PathBuf>) {
     (found, lifted)
 }
 
+fn games_own_first(a: &Font, b: &Font) -> Ordering {
+    let place = |one: &Font| (one.builtin, packed_in(&one.at).is_some());
+
+    place(a).cmp(&place(b)).then_with(|| a.at.cmp(&b.at))
+}
+
+fn one_per_name(found: &mut Vec<Font>) {
+    let mut named = HashSet::new();
+    found.retain(|one| named.insert(one.name.to_lowercase()));
+}
+
 pub fn faces(game_dir: &Path, store: &Path) -> Vec<Font> {
     let mut found = face::faces(game_dir, game_dir);
     found.retain(|one| !ours(&one.at));
@@ -74,14 +87,10 @@ pub fn faces(game_dir: &Path, store: &Path) -> Vec<Font> {
 
     let (packed, lifted) = packed(game_dir, store);
     face::swept(store, &lifted);
+    found.extend(packed);
 
-    for one in packed {
-        if !found.iter().any(|loose| loose.name == one.name) {
-            found.push(one);
-        }
-    }
-
-    found.sort_by(|a, b| a.builtin.cmp(&b.builtin).then(a.at.cmp(&b.at)));
+    found.sort_by(games_own_first);
+    one_per_name(&mut found);
 
     found
 }
@@ -320,17 +329,48 @@ mod tests {
                 .map(|one| (one.name.as_str(), one.at.as_str()))
                 .collect::<Vec<_>>(),
             [
-                ("Zenda.otf", "game/archive.rpa|fonts/Zenda.otf"),
                 ("Lato-Regular.ttf", "game/gui/Lato-Regular.ttf"),
+                ("Zenda.otf", "game/archive.rpa|fonts/Zenda.otf"),
             ],
-            "a face the build packed away is one the game still draws with, and the loose copy \
-             wins a clash because Ren'Py reads the folder before the archive; a face we carried \
-             in ourselves is not offered back even from inside an archive"
+            "a face the build packed away is one the game still draws with, and it reads after \
+             the loose ones because Ren'Py opens the folder before the archive, so the loose \
+             copy stands for a name both hold; a face we carried in ourselves is not offered \
+             back even from inside an archive"
         );
         assert_eq!(
-            fs::read(&found[0].shown).expect("the copy lifted out of the archive"),
+            fs::read(&found[1].shown).expect("the copy lifted out of the archive"),
             face::fake::called("Zenda"),
             "the copy a reader draws the sample with has to be the very bytes the game draws with"
+        );
+    }
+
+    #[test]
+    fn every_copy_of_a_name_is_one_face_and_the_games_own_stands_for_it() {
+        let sandbox = tempfile::tempdir().expect("a temp folder");
+        let store = tempfile::tempdir().expect("a store");
+        let game = sandbox.path();
+
+        for at in [
+            "renpy/common/GOTHIC.TTF",
+            "game/gui/gothic.ttf",
+            "game/fonts/GOTHIC.TTF",
+        ] {
+            let at = game.join(at);
+            fs::create_dir_all(at.parent().expect("a folder")).expect("a folder");
+            fs::write(&at, []).expect("a font");
+        }
+
+        let found: Vec<String> = faces(game, store.path())
+            .into_iter()
+            .map(|one| one.at)
+            .collect();
+
+        assert_eq!(
+            found,
+            ["game/fonts/GOTHIC.TTF"],
+            "the map swaps by name and Ren'Py folds case when it opens a file, so every copy of \
+             a name is one face to the reader, and the one shown is the copy the game itself \
+             brought"
         );
     }
 
