@@ -293,16 +293,8 @@ pub trait Engine: Send + Sync {
 
     fn bare<'t>(&self, text: &'t str) -> Cow<'t, str>;
 
-    fn worth_asking(&self, text: &str) -> bool {
-        self.bare(text).chars().any(char::is_alphabetic)
-    }
-
     fn answered(&self, source: &str, translation: &str) -> Result<(), String> {
         self.validate(source, translation)?;
-
-        if !self.worth_asking(source) && translation != source {
-            return Err("this line holds no word to translate".to_string());
-        }
 
         if hand_written(source) && translation.trim() == source.trim() {
             return Err("this came back in the language it was written in".to_string());

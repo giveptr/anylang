@@ -593,39 +593,21 @@ mod tests {
     }
 
     #[test]
-    fn a_line_with_nothing_but_markup_is_never_worth_a_request() {
-        assert!(!Unity.worth_asking("//"));
-        assert!(!Unity.worth_asking("..."));
-        assert!(!Unity.worth_asking("1.5"));
+    fn a_line_the_format_asked_about_is_judged_on_its_structure_not_its_letters() {
         assert!(
-            !Unity.worth_asking("[i][/i]"),
-            "the letters inside a tag are the tag's own, not words to translate"
+            Unity.answered("...{0}?", "...{0} \u{304b}?").is_ok(),
+            "a line of nothing but a placeholder and punctuation still reaches the model when \
+             the format calls it text, and the natural rendering adds a word; counting letters \
+             in the source would refuse the very answer a translator would write"
         );
-        assert!(!Unity.worth_asking("<b></b>"));
-        assert!(!Unity.worth_asking("{0}"));
-
-        assert!(Unity.worth_asking("[i]Soon.[/i]"));
-        assert!(Unity.worth_asking("彼女は首をかたむけた。"));
-        assert!(Unity.worth_asking("Wait for me."));
-    }
-
-    #[test]
-    fn a_model_may_not_invent_words_where_there_were_none_but_a_person_may() {
-        for text in ["//", "...", "_", "/", "->", "(...)"] {
-            assert!(
-                Unity.answered(text, text).is_ok(),
-                "{text} passes through unchanged"
-            );
-            assert!(
-                Unity.answered(text, "N/A").is_err(),
-                "{text} carries no word, so a model answering with one is answering wrongly"
-            );
-            assert!(
-                Unity.validate(text, "N/A").is_ok(),
-                "{text} is still the reader's line to change by hand: refusing that would be \
-                 the tool deciding for them"
-            );
-        }
+        assert!(
+            Unity.answered("...{0}?", "... \u{304b}?").is_err(),
+            "what keeps the game whole is the placeholder, and that is still checked"
+        );
+        assert!(
+            Unity.answered("6'1\"", "185 cm").is_ok(),
+            "a measure with no letters in it is still a line someone reads"
+        );
     }
 
     #[test]
