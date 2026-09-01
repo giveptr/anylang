@@ -68,10 +68,6 @@ impl Engine for WolfRpg {
         text::validate(source, translation)
     }
 
-    fn bare<'t>(&self, said: &'t str) -> Cow<'t, str> {
-        text::RE_MARK.replace_all(said, "")
-    }
-
     fn rules(&self) -> Rules {
         Rules {
             markup: text::MARKUP_RULES,

@@ -17,7 +17,6 @@ use crate::engine::rpg_maker::text;
 use crate::engine::{Engine, Font, Install, Landing, Parsed, Prepare, Rules, Undo};
 use anyhow::Result;
 use futures::future::{BoxFuture, FutureExt};
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tracing::Instrument;
@@ -119,10 +118,6 @@ impl Engine for RpgMaker {
 
     fn validate(&self, source: &str, translation: &str) -> Result<(), String> {
         text::validate(source, translation)
-    }
-
-    fn bare<'t>(&self, text: &'t str) -> Cow<'t, str> {
-        text::unmarked(text)
     }
 
     fn pictures(&self, store: &Path) -> Vec<Shot> {

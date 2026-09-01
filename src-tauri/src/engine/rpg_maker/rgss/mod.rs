@@ -66,10 +66,6 @@ impl Engine for VxAce {
         text::validate(source, translation)
     }
 
-    fn bare<'t>(&self, text: &'t str) -> Cow<'t, str> {
-        text::unmarked(text)
-    }
-
     fn rules(&self) -> Rules {
         Rules {
             markup: text::MARKUP_RULES,

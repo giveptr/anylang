@@ -5,6 +5,13 @@ mod bundle;
 mod catalog;
 mod cursor;
 mod dotnet;
+fn bare(text: &str) -> Cow<'_, str> {
+    match RE_TAG.replace_all(text, "") {
+        Cow::Borrowed(bare) => RE_SLOT.replace_all(bare, ""),
+        Cow::Owned(bare) => Cow::Owned(RE_SLOT.replace_all(&bare, "").into_owned()),
+    }
+}
+
 #[cfg(test)]
 mod fake;
 mod fonts;
@@ -148,7 +155,7 @@ impl Engine for Unity {
 
     fn parse(&self, _at: &Path, text: &str) -> Box<dyn Parsed> {
         Box::new(sheet::read(text, |said| {
-            self.bare(said) == said && symbolic(said)
+            bare(said) == said && symbolic(said)
         }))
     }
 
@@ -168,13 +175,6 @@ impl Engine for Unity {
             markup: MARKUP_RULES,
             shape: Some(SHAPE_RULES),
             retry: RETRY_RULES,
-        }
-    }
-
-    fn bare<'t>(&self, text: &'t str) -> Cow<'t, str> {
-        match RE_TAG.replace_all(text, "") {
-            Cow::Borrowed(bare) => RE_SLOT.replace_all(bare, ""),
-            Cow::Owned(bare) => Cow::Owned(RE_SLOT.replace_all(&bare, "").into_owned()),
         }
     }
 

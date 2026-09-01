@@ -111,10 +111,6 @@ impl Engine for RenPy {
         text::validate(source, translation)
     }
 
-    fn bare<'t>(&self, text: &'t str) -> Cow<'t, str> {
-        text::unmarked(text)
-    }
-
     fn piles(&self) -> bool {
         false
     }

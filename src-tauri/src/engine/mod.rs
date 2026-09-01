@@ -291,8 +291,6 @@ pub trait Engine: Send + Sync {
         None
     }
 
-    fn bare<'t>(&self, text: &'t str) -> Cow<'t, str>;
-
     fn answered(&self, source: &str, translation: &str) -> Result<(), String> {
         self.validate(source, translation)?;
 
