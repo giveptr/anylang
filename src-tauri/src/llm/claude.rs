@@ -1,7 +1,7 @@
 use crate::cancel::Cancel;
 use crate::llm::{
     CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
-    exchange, finish, knocked,
+    finish, knocked, streamed,
 };
 use anyhow::Result;
 use reqwest::{Client, RequestBuilder};
@@ -95,9 +95,13 @@ impl Speaks for Claude {
                 self.shaping.wanted(),
             ));
 
-        let payload: Response = exchange(outgoing, request.cancel, &self.shaping).await?;
+        let mut gathered = Gathered::default();
+        streamed(outgoing, request.cancel, &self.shaping, |event| {
+            gathered.heard(event)
+        })
+        .await?;
 
-        payload.into_generation()
+        gathered.into_generation()
     }
 
     async fn reach(&self, cancel: &Cancel) -> Result<(), CallError> {
@@ -109,6 +113,7 @@ fn body(model: &str, max_tokens: u32, system: &str, user: &str, shaped: bool) ->
     let mut asked = json!({
         "model": model,
         "max_tokens": max_tokens,
+        "stream": true,
         "system": system,
         "messages": [{ "role": "user", "content": user }],
     });
@@ -126,23 +131,43 @@ fn body(model: &str, max_tokens: u32, system: &str, user: &str, shaped: bool) ->
 }
 
 #[derive(Debug, Deserialize)]
-struct Response {
-    #[serde(default)]
-    content: Vec<Block>,
-    #[serde(default)]
-    stop_reason: Option<String>,
-    #[serde(default)]
-    stop_details: Option<StopDetails>,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Event {
+    MessageStart {
+        message: Started,
+    },
+    ContentBlockDelta {
+        delta: Delta,
+    },
+    MessageDelta {
+        delta: Ending,
+        #[serde(default)]
+        usage: Option<Counted>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct Started {
     #[serde(default)]
     usage: Option<Counted>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Block {
+struct Delta {
     #[serde(rename = "type")]
     kind: String,
     #[serde(default)]
     text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Ending {
+    #[serde(default)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    stop_details: Option<StopDetails>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,9 +184,46 @@ struct Counted {
     output_tokens: u32,
 }
 
-impl Response {
+#[derive(Default)]
+struct Gathered {
+    text: String,
+    stop_reason: Option<String>,
+    stop_details: Option<StopDetails>,
+    input: u32,
+    output: u32,
+}
+
+impl Gathered {
+    fn heard(&mut self, event: Event) {
+        match event {
+            Event::MessageStart { message } => {
+                if let Some(usage) = message.usage {
+                    self.input = usage.input_tokens;
+                }
+            }
+            Event::ContentBlockDelta { delta } => {
+                if delta.kind == "text_delta"
+                    && let Some(text) = delta.text
+                {
+                    self.text.push_str(&text);
+                }
+            }
+            Event::MessageDelta { delta, usage } => {
+                if delta.stop_reason.is_some() {
+                    self.stop_reason = delta.stop_reason;
+                }
+                if delta.stop_details.is_some() {
+                    self.stop_details = delta.stop_details;
+                }
+                if let Some(usage) = usage {
+                    self.output = usage.output_tokens;
+                }
+            }
+            Event::Other => {}
+        }
+    }
+
     fn into_generation(self) -> Result<Generation, CallError> {
-        let counted = self.usage.unwrap_or_default();
         let stop_reason = self.stop_reason.unwrap_or_default();
 
         if stop_reason == "refusal" {
@@ -173,15 +235,8 @@ impl Response {
             return Err(CallError::Blocked(category));
         }
 
-        let text = self
-            .content
-            .into_iter()
-            .filter(|block| block.kind == "text")
-            .filter_map(|block| block.text)
-            .collect::<String>();
-
         finish(
-            text,
+            self.text,
             Finish {
                 reason: &stop_reason,
                 said: "stop_reason",
@@ -189,8 +244,8 @@ impl Response {
                 blocked: &[],
             },
             Usage {
-                input: counted.input_tokens,
-                output: counted.output_tokens,
+                input: self.input,
+                output: self.output,
             },
         )
     }
@@ -200,21 +255,42 @@ impl Response {
 mod tests {
     use super::*;
 
-    fn parse(value: Value) -> Result<Generation, CallError> {
-        serde_json::from_value::<Response>(value)
-            .expect("valid response")
-            .into_generation()
+    fn gathered(events: Vec<Value>) -> Result<Generation, CallError> {
+        let mut gathered = Gathered::default();
+        for event in events {
+            gathered.heard(serde_json::from_value::<Event>(event).expect("a valid event"));
+        }
+
+        gathered.into_generation()
+    }
+
+    fn text_delta(text: &str) -> Value {
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": text },
+        })
+    }
+
+    fn ended(stop_reason: &str) -> Value {
+        json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": stop_reason, "stop_sequence": null },
+            "usage": { "output_tokens": 34 },
+        })
     }
 
     #[test]
-    fn an_answer_split_into_blocks_comes_back_as_one_text() {
-        let generation = parse(json!({
-            "content": [
-                { "type": "text", "text": "[{\"id\": 0," },
-                { "type": "text", "text": " \"translation\": \"A\"}]" },
-            ],
-            "stop_reason": "end_turn",
-        }))
+    fn an_answer_split_into_deltas_comes_back_as_one_text() {
+        let generation = gathered(vec![
+            json!({ "type": "message_start", "message": { "usage": { "input_tokens": 12, "output_tokens": 1 } } }),
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+            text_delta("[{\"id\": 0,"),
+            text_delta(" \"translation\": \"A\"}]"),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            ended("end_turn"),
+            json!({ "type": "message_stop" }),
+        ])
         .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert_eq!(generation.text, r#"[{"id": 0, "translation": "A"}]"#);
@@ -223,34 +299,38 @@ mod tests {
 
     #[test]
     fn what_the_call_cost_is_carried_back_so_the_run_can_bill_it() {
-        let generation = parse(json!({
-            "content": [{ "type": "text", "text": "[]" }],
-            "stop_reason": "end_turn",
-            "usage": { "input_tokens": 12, "output_tokens": 34 },
-        }))
+        let generation = gathered(vec![
+            json!({ "type": "message_start", "message": { "usage": { "input_tokens": 12, "output_tokens": 1 } } }),
+            text_delta("[]"),
+            ended("end_turn"),
+        ])
         .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert_eq!(generation.usage.input, 12);
         assert_eq!(
             generation.usage.output, 34,
-            "the reader is shown what a run spent, and each provider names these fields its own \
-             way, so reading the wrong one bills every call at nothing"
+            "the input count opens the message and the output count closes it, and each \
+             provider names these fields its own way, so reading the wrong one bills every call \
+             at nothing"
         );
     }
 
     #[test]
-    fn thinking_blocks_are_left_out_of_the_answer() {
-        let generation = parse(json!({
-            "content": [
-                {
-                    "type": "thinking",
+    fn thinking_deltas_and_pings_are_left_out_of_the_answer() {
+        let generation = gathered(vec![
+            json!({ "type": "ping" }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "thinking_delta",
                     "thinking": "\u{307e}\u{305a}\u{65e5}\u{672c}\u{8a9e}\u{3067}\u{8003}\u{3048}\u{308b}",
                     "text": "\u{307e}\u{305a}\u{65e5}\u{672c}\u{8a9e}\u{3067}\u{8003}\u{3048}\u{308b}",
                 },
-                { "type": "text", "text": "[]" },
-            ],
-            "stop_reason": "end_turn",
-        }))
+            }),
+            text_delta("[]"),
+            ended("end_turn"),
+        ])
         .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert_eq!(
@@ -262,11 +342,13 @@ mod tests {
 
     #[test]
     fn a_refusal_is_reported_with_its_category() {
-        let result = parse(json!({
-            "content": [],
-            "stop_reason": "refusal",
-            "stop_details": { "type": "refusal", "category": "cyber" },
-        }));
+        let result = gathered(vec![json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": "refusal",
+                "stop_details": { "type": "refusal", "category": "cyber" },
+            },
+        })]);
 
         assert!(
             matches!(result, Err(CallError::Blocked(reason)) if reason == "cyber"),
@@ -277,11 +359,8 @@ mod tests {
 
     #[test]
     fn an_answer_the_model_cut_short_is_reported_as_truncated() {
-        let generation = parse(json!({
-            "content": [{ "type": "text", "text": "[{\"id\": 0" }],
-            "stop_reason": "max_tokens",
-        }))
-        .unwrap_or_else(|_| panic!("expected a generation"));
+        let generation = gathered(vec![text_delta("[{\"id\": 0"), ended("max_tokens")])
+            .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert!(
             generation.truncated,
@@ -300,6 +379,12 @@ mod tests {
         assert_eq!(
             payload["messages"],
             json!([{ "role": "user", "content": "user" }])
+        );
+        assert_eq!(
+            payload["stream"],
+            json!(true),
+            "a whole answer arrives as one silence with the text at the end, and only a stream \
+             lets a connection that went quiet be told apart from a model still writing"
         );
         assert!(
             payload.get("temperature").is_none() && payload.get("thinking").is_none(),

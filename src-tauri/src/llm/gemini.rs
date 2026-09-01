@@ -1,7 +1,7 @@
 use crate::cancel::Cancel;
 use crate::llm::{
     CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
-    exchange, finish, knocked,
+    finish, knocked, streamed,
 };
 use anyhow::{Context, Result};
 use gcp_auth::{CustomServiceAccount, TokenProvider};
@@ -108,7 +108,7 @@ impl Speaks for Gemini {
     async fn call(&self, request: Request<'_>) -> Result<Generation, CallError> {
         let outgoing = self
             .client
-            .post(format!("{}:generateContent", self.named()))
+            .post(format!("{}:streamGenerateContent?alt=sse", self.named()))
             .json(&body(
                 request.system,
                 request.user,
@@ -116,10 +116,16 @@ impl Speaks for Gemini {
                 self.shaping.wanted(),
             ));
 
-        let payload: Response =
-            exchange(self.signed(outgoing).await?, request.cancel, &self.shaping).await?;
+        let mut gathered = Gathered::default();
+        streamed(
+            self.signed(outgoing).await?,
+            request.cancel,
+            &self.shaping,
+            |event| gathered.heard(event),
+        )
+        .await?;
 
-        payload.into_generation()
+        gathered.into_generation()
     }
 
     async fn reach(&self, cancel: &Cancel) -> Result<(), CallError> {
@@ -156,7 +162,7 @@ fn body(system: &str, user: &str, temperature: Option<f32>, shaped: bool) -> Val
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Response {
+struct Event {
     #[serde(default)]
     candidates: Vec<Candidate>,
     #[serde(default)]
@@ -172,55 +178,6 @@ struct UsageMetadata {
     prompt_token_count: u32,
     #[serde(default)]
     candidates_token_count: u32,
-}
-
-impl Response {
-    fn into_generation(self) -> Result<Generation, CallError> {
-        let counted = self.usage_metadata.unwrap_or_default();
-        if let Some(feedback) = &self.prompt_feedback
-            && let Some(reason) = &feedback.block_reason
-        {
-            return Err(CallError::Blocked(reason.clone()));
-        }
-
-        let Some(candidate) = self.candidates.into_iter().next() else {
-            return Err(CallError::Retryable(
-                "the API returned no candidates".to_string(),
-            ));
-        };
-
-        let finish_reason = candidate.finish_reason.unwrap_or_default();
-        let text = candidate
-            .content
-            .map(|content| {
-                content
-                    .parts
-                    .into_iter()
-                    .filter_map(|part| part.text)
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
-
-        finish(
-            text,
-            Finish {
-                reason: &finish_reason,
-                said: "finishReason",
-                cut: "MAX_TOKENS",
-                blocked: &[
-                    "SAFETY",
-                    "PROHIBITED_CONTENT",
-                    "BLOCKLIST",
-                    "RECITATION",
-                    "SPII",
-                ],
-            },
-            Usage {
-                input: counted.prompt_token_count,
-                output: counted.candidates_token_count,
-            },
-        )
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,36 +208,132 @@ struct PromptFeedback {
     block_reason: Option<String>,
 }
 
+#[derive(Default)]
+struct Gathered {
+    text: String,
+    finish_reason: Option<String>,
+    block_reason: Option<String>,
+    usage: Option<UsageMetadata>,
+    answered: bool,
+}
+
+impl Gathered {
+    fn heard(&mut self, event: Event) {
+        if let Some(reason) = event
+            .prompt_feedback
+            .and_then(|feedback| feedback.block_reason)
+        {
+            self.block_reason = Some(reason);
+        }
+
+        if event.usage_metadata.is_some() {
+            self.usage = event.usage_metadata;
+        }
+
+        let Some(candidate) = event.candidates.into_iter().next() else {
+            return;
+        };
+
+        self.answered = true;
+        for part in candidate
+            .content
+            .map(|content| content.parts)
+            .unwrap_or_default()
+        {
+            if let Some(text) = part.text {
+                self.text.push_str(&text);
+            }
+        }
+        if candidate.finish_reason.is_some() {
+            self.finish_reason = candidate.finish_reason;
+        }
+    }
+
+    fn into_generation(self) -> Result<Generation, CallError> {
+        if let Some(reason) = self.block_reason {
+            return Err(CallError::Blocked(reason));
+        }
+
+        if !self.answered {
+            return Err(CallError::Retryable(
+                "the API returned no candidates".to_string(),
+            ));
+        }
+
+        let counted = self.usage.unwrap_or_default();
+        let finish_reason = self.finish_reason.unwrap_or_default();
+
+        finish(
+            self.text,
+            Finish {
+                reason: &finish_reason,
+                said: "finishReason",
+                cut: "MAX_TOKENS",
+                blocked: &[
+                    "SAFETY",
+                    "PROHIBITED_CONTENT",
+                    "BLOCKLIST",
+                    "RECITATION",
+                    "SPII",
+                ],
+            },
+            Usage {
+                input: counted.prompt_token_count,
+                output: counted.candidates_token_count,
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(value: Value) -> Result<Generation, CallError> {
-        serde_json::from_value::<Response>(value)
-            .expect("valid response")
-            .into_generation()
+    fn gathered(events: Vec<Value>) -> Result<Generation, CallError> {
+        let mut gathered = Gathered::default();
+        for event in events {
+            gathered.heard(serde_json::from_value::<Event>(event).expect("a valid event"));
+        }
+
+        gathered.into_generation()
     }
 
     #[test]
-    fn an_answer_split_into_parts_comes_back_as_one_text() {
-        let generation = parse(json!({
-            "candidates": [{
-                "content": { "parts": [
-                    { "text": "[{\"id\": 0," },
-                    { "text": " \"translation\": \"A\"}]" }
-                ]},
-                "finishReason": "STOP"
-            }]
-        }))
+    fn an_answer_split_across_events_and_parts_comes_back_as_one_text() {
+        let generation = gathered(vec![
+            json!({
+                "candidates": [{
+                    "content": { "parts": [
+                        { "text": "[{\"id\": 0," },
+                        { "text": " \"translation\":" }
+                    ]}
+                }],
+                "usageMetadata": { "promptTokenCount": 12, "candidatesTokenCount": 3 }
+            }),
+            json!({
+                "candidates": [{
+                    "content": { "parts": [{ "text": " \"A\"}]" }] },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": { "promptTokenCount": 12, "candidatesTokenCount": 34 }
+            }),
+        ])
         .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert_eq!(generation.text, r#"[{"id": 0, "translation": "A"}]"#);
         assert!(!generation.truncated);
+        assert_eq!(
+            (generation.usage.input, generation.usage.output),
+            (12, 34),
+            "the count on each event is the running total, so the last one is the bill"
+        );
     }
 
     #[test]
     fn a_prompt_the_service_blocked_is_reported_with_its_reason() {
-        let result = parse(json!({ "promptFeedback": { "blockReason": "SAFETY" } }));
+        let result = gathered(vec![
+            json!({ "promptFeedback": { "blockReason": "SAFETY" } }),
+        ]);
         assert!(
             matches!(result, Err(CallError::Blocked(reason)) if reason == "SAFETY"),
             "a blocked prompt comes back with no candidate at all, so reading it as an empty \
@@ -290,9 +343,9 @@ mod tests {
 
     #[test]
     fn an_answer_the_service_blocked_is_reported_with_its_reason() {
-        let result = parse(json!({
+        let result = gathered(vec![json!({
             "candidates": [{ "content": { "parts": [] }, "finishReason": "SAFETY" }]
-        }));
+        })]);
         assert!(
             matches!(result, Err(CallError::Blocked(reason)) if reason == "SAFETY"),
             "a candidate stopped part way holds no lines, and retrying it forever would spend \
@@ -302,18 +355,28 @@ mod tests {
 
     #[test]
     fn an_answer_the_model_cut_short_is_reported_as_truncated() {
-        let generation = parse(json!({
+        let generation = gathered(vec![json!({
             "candidates": [{
                 "content": { "parts": [{ "text": "[{\"id\": 0" }] },
                 "finishReason": "MAX_TOKENS"
             }]
-        }))
+        })])
         .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert!(
             generation.truncated,
             "an answer that ran out of room is half a batch, and taking it as whole would file \
              the missing lines as done"
+        );
+    }
+
+    #[test]
+    fn a_stream_that_never_named_a_candidate_is_not_an_answer() {
+        let result = gathered(vec![json!({ "usageMetadata": { "promptTokenCount": 12 } })]);
+        assert!(
+            matches!(result, Err(CallError::Retryable(message)) if message == "the API returned no candidates"),
+            "a stream of nothing is a fault at the endpoint worth trying again, not an empty \
+             translation to file"
         );
     }
 }

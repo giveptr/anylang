@@ -1,7 +1,7 @@
 use crate::cancel::Cancel;
 use crate::llm::{
     CallError, Finish, Generation, Request, Shaping, Speaks, Spelling, Usage, answer_schema,
-    exchange, finish, knocked,
+    finish, knocked, streamed,
 };
 use anyhow::Result;
 use reqwest::header::AUTHORIZATION;
@@ -57,9 +57,13 @@ impl Speaks for OpenAiCompatible {
                 self.shaping.wanted(),
             ));
 
-        let payload: Response = exchange(outgoing, request.cancel, &self.shaping).await?;
+        let mut gathered = Gathered::default();
+        streamed(outgoing, request.cancel, &self.shaping, |chunk| {
+            gathered.heard(chunk)
+        })
+        .await?;
 
-        payload.into_generation()
+        gathered.into_generation()
     }
 
     async fn reach(&self, cancel: &Cancel) -> Result<(), CallError> {
@@ -74,6 +78,7 @@ fn base(url: &str) -> String {
 fn body(model: &str, system: &str, user: &str, temperature: Option<f32>, shaped: bool) -> Value {
     let mut asked = json!({
         "model": model,
+        "stream": true,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
@@ -92,17 +97,32 @@ fn body(model: &str, system: &str, user: &str, temperature: Option<f32>, shaped:
                 "schema": answer_schema(Spelling::Plain),
             },
         });
+        asked["stream_options"] = json!({ "include_usage": true });
     }
 
     asked
 }
 
 #[derive(Debug, Deserialize)]
-struct Response {
+struct Chunk {
     #[serde(default)]
     choices: Vec<Choice>,
     #[serde(default)]
     usage: Option<Counted>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Choice {
+    #[serde(default)]
+    delta: Option<Delta>,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Delta {
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -113,23 +133,43 @@ struct Counted {
     completion_tokens: u32,
 }
 
-impl Response {
+#[derive(Default)]
+struct Gathered {
+    text: String,
+    finish_reason: Option<String>,
+    usage: Option<Counted>,
+    answered: bool,
+}
+
+impl Gathered {
+    fn heard(&mut self, chunk: Chunk) {
+        if let Some(choice) = chunk.choices.into_iter().next() {
+            self.answered = true;
+            if let Some(content) = choice.delta.and_then(|delta| delta.content) {
+                self.text.push_str(&content);
+            }
+            if choice.finish_reason.is_some() {
+                self.finish_reason = choice.finish_reason;
+            }
+        }
+
+        if chunk.usage.is_some() {
+            self.usage = chunk.usage;
+        }
+    }
+
     fn into_generation(self) -> Result<Generation, CallError> {
-        let counted = self.usage.unwrap_or_default();
-        let Some(choice) = self.choices.into_iter().next() else {
+        if !self.answered {
             return Err(CallError::Retryable(
                 "the API returned no choices".to_string(),
             ));
-        };
+        }
 
-        let finish_reason = choice.finish_reason.unwrap_or_default();
-        let text = choice
-            .message
-            .and_then(|message| message.content)
-            .unwrap_or_default();
+        let counted = self.usage.unwrap_or_default();
+        let finish_reason = self.finish_reason.unwrap_or_default();
 
         finish(
-            text,
+            self.text,
             Finish {
                 reason: &finish_reason,
                 said: "finish_reason",
@@ -142,20 +182,6 @@ impl Response {
             },
         )
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct Choice {
-    #[serde(default)]
-    message: Option<Message>,
-    #[serde(default)]
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Message {
-    #[serde(default)]
-    content: Option<String>,
 }
 
 #[cfg(test)]
@@ -194,11 +220,22 @@ mod tests {
             "an endpoint left to guess hands back the source key it was given, and a batch \
              answered under the wrong key is fifty lines paid for and thrown away"
         );
+        assert_eq!(
+            payload["stream_options"],
+            json!({ "include_usage": true }),
+            "a stream carries no usage unless asked, and a run that cannot say what it spent \
+             leaves the reader guessing at the bill"
+        );
 
         assert_eq!(payload["temperature"], json!(0.8f32));
 
         let plain = body("gpt", "system", "user", None, false);
         assert!(plain.get("response_format").is_none());
+        assert!(
+            plain.get("stream_options").is_none(),
+            "an endpoint that turned the request down as malformed gets the bare form next, \
+             with nothing on it that a strict server might refuse"
+        );
         assert!(
             plain.get("temperature").is_none(),
             "an endpoint that refuses sampling refuses the whole request over it, so a field \
@@ -207,20 +244,35 @@ mod tests {
         assert_eq!(plain["messages"][1]["content"], json!("user"));
     }
 
-    fn parse(value: Value) -> Result<Generation, CallError> {
-        serde_json::from_value::<Response>(value)
-            .expect("valid response")
-            .into_generation()
+    #[test]
+    fn every_request_asks_for_the_answer_as_a_stream() {
+        for shaped in [true, false] {
+            assert_eq!(
+                body("gpt", "system", "user", None, shaped)["stream"],
+                json!(true),
+                "a whole answer arrives as one silence with the text at the end, and only a \
+                 stream lets a proxy that went quiet be told apart from a model still writing"
+            );
+        }
+    }
+
+    fn gathered(chunks: Vec<Value>) -> Result<Generation, CallError> {
+        let mut gathered = Gathered::default();
+        for chunk in chunks {
+            gathered.heard(serde_json::from_value::<Chunk>(chunk).expect("a valid chunk"));
+        }
+
+        gathered.into_generation()
     }
 
     #[test]
-    fn an_answer_is_taken_from_the_message_the_choice_holds() {
-        let generation = parse(json!({
-            "choices": [{
-                "message": { "role": "assistant", "content": "{\"translations\": []}" },
-                "finish_reason": "stop"
-            }]
-        }))
+    fn an_answer_arriving_in_pieces_comes_back_as_one_text() {
+        let generation = gathered(vec![
+            json!({ "choices": [{ "delta": { "role": "assistant", "content": "" }, "finish_reason": null }] }),
+            json!({ "choices": [{ "delta": { "content": "{\"translations\":" }, "finish_reason": null }] }),
+            json!({ "choices": [{ "delta": { "content": " []}" }, "finish_reason": null }] }),
+            json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] }),
+        ])
         .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert_eq!(generation.text, r#"{"translations": []}"#);
@@ -232,10 +284,26 @@ mod tests {
     }
 
     #[test]
+    fn what_the_call_cost_arrives_after_the_last_choice() {
+        let generation = gathered(vec![
+            json!({ "choices": [{ "delta": { "content": "[]" }, "finish_reason": "stop" }] }),
+            json!({ "choices": [], "usage": { "prompt_tokens": 12, "completion_tokens": 34 } }),
+        ])
+        .unwrap_or_else(|_| panic!("expected a generation"));
+
+        assert_eq!(generation.usage.input, 12);
+        assert_eq!(
+            generation.usage.output, 34,
+            "the usage rides in a trailing chunk with no choices, and a reader that stopped \
+             listening at the finish reason would bill every call at nothing"
+        );
+    }
+
+    #[test]
     fn an_answer_the_model_cut_short_is_reported_as_truncated() {
-        let generation = parse(json!({
-            "choices": [{ "message": { "content": "[{\"id\"" }, "finish_reason": "length" }]
-        }))
+        let generation = gathered(vec![json!({
+            "choices": [{ "delta": { "content": "[{\"id\"" }, "finish_reason": "length" }]
+        })])
         .unwrap_or_else(|_| panic!("expected a generation"));
 
         assert!(
@@ -247,13 +315,23 @@ mod tests {
 
     #[test]
     fn an_answer_the_filter_stopped_is_reported_with_its_reason() {
-        let result = parse(json!({
-            "choices": [{ "message": { "content": "" }, "finish_reason": "content_filter" }]
-        }));
+        let result = gathered(vec![json!({
+            "choices": [{ "delta": { "content": "" }, "finish_reason": "content_filter" }]
+        })]);
         assert!(
             matches!(result, Err(CallError::Blocked(reason)) if reason == "content_filter"),
             "a filtered answer is a line to leave to the reader, not a fault to retry until the \
              run gives up"
+        );
+    }
+
+    #[test]
+    fn a_stream_that_never_named_a_choice_is_not_an_answer() {
+        let result = gathered(vec![json!({ "choices": [] })]);
+        assert!(
+            matches!(result, Err(CallError::Retryable(message)) if message == "the API returned no choices"),
+            "a stream of nothing is a fault at the endpoint worth trying again, not an empty \
+             translation to file"
         );
     }
 }

@@ -249,7 +249,7 @@ fn finish(text: String, at: Finish<'_>, usage: Usage) -> Result<Generation, Call
 
 fn http_client(tuning: &Tuning) -> Result<Client> {
     Client::builder()
-        .timeout(tuning.request_timeout)
+        .read_timeout(tuning.silence)
         .build()
         .context("building the HTTP client")
 }
@@ -312,16 +312,113 @@ pub async fn build(settings: &Settings, tuning: &Tuning) -> Result<Box<dyn Model
     }
 }
 
-async fn exchange<T: DeserializeOwned>(
+async fn streamed<E: DeserializeOwned>(
     outgoing: RequestBuilder,
     cancel: &Cancel,
     shaping: &Shaping,
-) -> Result<T, CallError> {
-    let response = sent(outgoing, cancel, Some(shaping)).await?;
+    mut heard: impl FnMut(E),
+) -> Result<(), CallError> {
+    let mut response = sent(outgoing, cancel, Some(shaping)).await?;
+    let mut sse = Sse::default();
 
-    until_stopped(cancel, response.json())
+    while let Some(bytes) = until_stopped(cancel, response.chunk())
         .await?
-        .map_err(|error| CallError::Retryable(format!("response body was not valid JSON: {error}")))
+        .map_err(|error| CallError::Retryable(format!("the stream broke off: {error}")))?
+    {
+        delivered(sse.fed(&bytes)?, &mut heard)?;
+    }
+
+    delivered(sse.drained()?, &mut heard)
+}
+
+fn delivered<E: DeserializeOwned>(
+    data: Vec<String>,
+    heard: &mut impl FnMut(E),
+) -> Result<(), CallError> {
+    for one in data {
+        if let Some(event) = parsed(&one)? {
+            heard(event);
+        }
+    }
+
+    Ok(())
+}
+
+const DONE: &str = "[DONE]";
+
+fn parsed<E: DeserializeOwned>(data: &str) -> Result<Option<E>, CallError> {
+    if data == DONE {
+        return Ok(None);
+    }
+
+    let value: Value = serde_json::from_str(data)
+        .map_err(|error| CallError::Retryable(format!("an event was not valid JSON: {error}")))?;
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        return Err(CallError::Retryable(format!(
+            "the stream carried an error: {error}"
+        )));
+    }
+
+    serde_json::from_value(value).map(Some).map_err(|error| {
+        CallError::Retryable(format!("an event was not the shape expected: {error}"))
+    })
+}
+
+#[derive(Default)]
+struct Sse {
+    pending: Vec<u8>,
+    data: Vec<String>,
+}
+
+impl Sse {
+    fn fed(&mut self, bytes: &[u8]) -> Result<Vec<String>, CallError> {
+        self.pending.extend_from_slice(bytes);
+
+        let mut out = Vec::new();
+        while let Some(at) = self.pending.iter().position(|&byte| byte == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=at).collect();
+            out.extend(self.line(&line)?);
+        }
+
+        Ok(out)
+    }
+
+    fn drained(&mut self) -> Result<Vec<String>, CallError> {
+        let mut out = Vec::new();
+
+        let rest = std::mem::take(&mut self.pending);
+        if !rest.is_empty() {
+            out.extend(self.line(&rest)?);
+        }
+        out.extend(self.flushed());
+
+        Ok(out)
+    }
+
+    fn line(&mut self, raw: &[u8]) -> Result<Option<String>, CallError> {
+        let line = std::str::from_utf8(raw)
+            .map_err(|_| CallError::Retryable("the stream was not UTF-8".to_string()))?
+            .trim_end_matches(['\r', '\n']);
+
+        if line.is_empty() {
+            return Ok(self.flushed());
+        }
+
+        if let Some(rest) = line.strip_prefix("data:") {
+            self.data
+                .push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
+        }
+
+        Ok(None)
+    }
+
+    fn flushed(&mut self) -> Option<String> {
+        if self.data.is_empty() {
+            return None;
+        }
+
+        Some(std::mem::take(&mut self.data).join("\n"))
+    }
 }
 
 async fn until_stopped<F: Future>(cancel: &Cancel, work: F) -> Result<F::Output, CallError> {
@@ -447,6 +544,8 @@ mod tests {
     use crate::progress::{Heard, Quiet};
     use std::future;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct Flaky {
         failures_left: AtomicU32,
@@ -679,6 +778,158 @@ mod tests {
         assert!(
             matches!(result, Err(CallError::Stopped)),
             "a request that never answers has to be dropped, not waited out"
+        );
+    }
+
+    #[test]
+    fn events_are_cut_at_blank_lines_however_the_bytes_arrive() {
+        let mut sse = Sse::default();
+        let mut got = Vec::new();
+        for piece in [
+            "data: {\"a\"",
+            ":1}\r\n\r\ndata: one\ndata: two\n\n: keep-alive\n\nevent: x\ndata: {\"b\":2}\n",
+            "\n",
+        ] {
+            got.extend(sse.fed(piece.as_bytes()).unwrap());
+        }
+        got.extend(sse.drained().unwrap());
+
+        assert_eq!(
+            got,
+            ["{\"a\":1}", "one\ntwo", "{\"b\":2}"],
+            "the network hands over bytes at its own boundaries, so one event may arrive in \
+             halves and two may arrive at once; only the blank line says where an event ends"
+        );
+    }
+
+    #[test]
+    fn a_last_event_with_no_blank_line_after_it_is_still_delivered() {
+        let mut sse = Sse::default();
+        assert!(sse.fed(b"data: tail").unwrap().is_empty());
+        assert_eq!(
+            sse.drained().unwrap(),
+            ["tail"],
+            "a server that closes right after its last event never sends the blank line"
+        );
+    }
+
+    #[test]
+    fn what_the_stream_says_is_read_and_what_it_signals_is_not() {
+        assert!(
+            parsed::<Value>(DONE).unwrap().is_none(),
+            "the end marker is not an event"
+        );
+        assert_eq!(parsed::<Value>("{\"n\":1}").unwrap(), Some(json!({"n": 1})));
+        assert_eq!(
+            parsed::<Value>("{\"n\":1,\"error\":null}").unwrap(),
+            Some(json!({"n": 1, "error": null})),
+            "some servers spell out an error slot on every chunk and leave it empty"
+        );
+        assert!(
+            matches!(
+                parsed::<Value>("{\"error\":{\"message\":\"overloaded\"}}"),
+                Err(CallError::Retryable(message)) if message.contains("overloaded")
+            ),
+            "an error sent after the 200 is the only word the reader gets about why the answer \
+             stopped, and reading it as an empty answer would hide it"
+        );
+    }
+
+    async fn serving(script: Vec<(u64, &'static str)>, held: bool) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a free port");
+        let port = listener.local_addr().expect("a bound address").port();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("one client");
+            let mut seen = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !seen.windows(4).any(|end| end == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.expect("the request");
+                if read == 0 {
+                    return;
+                }
+                seen.extend_from_slice(&buffer[..read]);
+            }
+
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("headers");
+            for (pause, piece) in script {
+                time::sleep(Duration::from_millis(pause)).await;
+                socket.write_all(piece.as_bytes()).await.expect("a piece");
+            }
+            if held {
+                time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    async fn heard_from(url: &str, silence: u64) -> Result<Vec<Value>, CallError> {
+        let client = Client::builder()
+            .read_timeout(Duration::from_millis(silence))
+            .build()
+            .expect("a client");
+
+        let mut got = Vec::new();
+        streamed::<Value>(
+            client.post(url),
+            &Cancel::default(),
+            &Shaping::default(),
+            |event| got.push(event),
+        )
+        .await?;
+
+        Ok(got)
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_keeps_arriving_is_never_cut_however_long_it_takes() {
+        let url = serving(
+            vec![
+                (0, "data: {\"n\":1}\n\n"),
+                (150, "data: {\"n\":2}\n\n"),
+                (150, "data: {\"n\":3}\n\n"),
+                (150, "data: [DONE]\n\n"),
+            ],
+            false,
+        )
+        .await;
+
+        let got = heard_from(&url, 300)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(
+            got,
+            [json!({"n": 1}), json!({"n": 2}), json!({"n": 3})],
+            "450ms of answer under a 300ms silence limit: what is bounded is the quiet between \
+             pieces, never the whole, so a long answer from a slow model is not the thing that \
+             gets cut"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_goes_quiet_is_given_up_after_the_silence_allowed() {
+        let url = serving(vec![(0, "data: {\"n\":1}\n\n")], true).await;
+
+        let began = time::Instant::now();
+        let result = heard_from(&url, 300).await;
+
+        assert!(
+            matches!(result, Err(CallError::Retryable(_))),
+            "a proxy that took the request and went silent is told apart from a model still \
+             writing by the one thing that differs: nothing arrives"
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "and it is given up as soon as the silence runs out, not when the server lets go"
         );
     }
 
