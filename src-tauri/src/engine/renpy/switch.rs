@@ -49,7 +49,10 @@ pub fn switch(
         };
 
         replaces = true;
-        mapped.push(format!("{}: {landing}", quoted(&from.to_string_lossy())));
+        mapped.push(format!(
+            "{}: {landing}",
+            quoted(&from.to_string_lossy().to_lowercase())
+        ));
     }
 
     if replaces {
@@ -57,7 +60,7 @@ pub fn switch(
             "    {FONT_HOOK}_map = {{{}}}\n\
              \x20   class {FONT_HOOK}(object):\n\
              \x20       def get(self, key, default=None):\n\
-             \x20           name = str(key[0]).replace(\"\\\\\", \"/\").rsplit(\"/\", 1)[-1]\n\
+             \x20           name = key[0].replace(\"\\\\\", \"/\").rsplit(\"/\", 1)[-1].lower()\n\
              \x20           found = {FONT_HOOK}_map.get(name)\n\
              \x20           if not found:\n\
              \x20               return default\n\
@@ -185,9 +188,28 @@ mod tests {
 
         assert!(
             body.contains(
-                r#"_anylang_fonts_map = {"Lato-Regular.ttf": "tl/french/fonts/anylang-NotoSans.ttf", "zenda.ttf": "tl/french/fonts/anylang-Charm-Bold.otf"}"#
+                r#"_anylang_fonts_map = {"lato-regular.ttf": "tl/french/fonts/anylang-NotoSans.ttf", "zenda.ttf": "tl/french/fonts/anylang-Charm-Bold.otf"}"#
             ),
             "each face the game asks for has to reach the one chosen for it:\n{body}"
+        );
+    }
+
+    #[test]
+    fn a_face_asked_for_in_another_case_still_reaches_the_one_chosen_for_it() {
+        let body = switched(
+            "Japanese",
+            &tweaks(),
+            &swapping(&[("GOTHIC.TTF", "/x/NotoSans.ttf")]),
+        )
+        .expect("a switch file");
+
+        assert!(
+            body.contains(
+                r#"_anylang_fonts_map = {"gothic.ttf": "tl/japanese/fonts/anylang-NotoSans.ttf"}"#
+            ) && body.contains(".rsplit(\"/\", 1)[-1].lower()"),
+            "Ren'Py opens every file through loader.lower_map, so a game built on Windows asks \
+             for fonts/GOTHIC.ttf and draws with GOTHIC.TTF; a map spelled the way the file is \
+             misses the way the game asks, replaces nothing, and the reader sees boxes:\n{body}"
         );
     }
 
