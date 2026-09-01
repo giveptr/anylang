@@ -9,6 +9,7 @@ use std::sync::{LazyLock, Mutex};
 use tokio::fs;
 
 const HELD: &str = "backup";
+const SHIPPED: &str = "shipped";
 
 const MARKS: &str = "marks";
 const PARTS: &str = "parts";
@@ -61,6 +62,10 @@ fn under(root: &Path, tree: &str, game_dir: &Path, file: &Path) -> Result<PathBu
 
 fn mark_of(root: &Path, game_dir: &Path, file: &Path) -> Result<PathBuf> {
     under(root, MARKS, game_dir, file)
+}
+
+fn shipped(root: &Path, game_dir: &Path, at: &Path) -> Option<PathBuf> {
+    under(root, SHIPPED, game_dir, at).ok()
 }
 
 pub fn is_part(at: &Path) -> bool {
@@ -184,14 +189,23 @@ fn marks_now(root: &Path, game_dir: &Path, file: &Path) -> Result<Vec<String>> {
     }
 }
 
-async fn marks(root: &Path, game_dir: &Path, file: &Path) -> Result<Vec<String>> {
+async fn blocking<T: Send + 'static>(
+    root: &Path,
+    game_dir: &Path,
+    file: &Path,
+    work: impl FnOnce(&Path, &Path, &Path) -> Result<T> + Send + 'static,
+) -> Result<T> {
     let (root, game_dir, file) = (
         root.to_path_buf(),
         game_dir.to_path_buf(),
         file.to_path_buf(),
     );
 
-    tokio::task::spawn_blocking(move || marks_now(&root, &game_dir, &file)).await?
+    tokio::task::spawn_blocking(move || work(&root, &game_dir, &file)).await?
+}
+
+async fn marks(root: &Path, game_dir: &Path, file: &Path) -> Result<Vec<String>> {
+    blocking(root, game_dir, file, marks_now).await
 }
 
 async fn widen(root: &Path, game_dir: &Path, file: &Path, said: &str) -> Result<()> {
@@ -225,24 +239,11 @@ fn ours_now(root: &Path, game_dir: &Path, file: &Path) -> Result<bool> {
 }
 
 async fn ours(root: &Path, game_dir: &Path, file: &Path) -> Result<bool> {
-    let (root, game_dir, file) = (
-        root.to_path_buf(),
-        game_dir.to_path_buf(),
-        file.to_path_buf(),
-    );
-
-    tokio::task::spawn_blocking(move || ours_now(&root, &game_dir, &file)).await?
+    blocking(root, game_dir, file, ours_now).await
 }
 
 pub async fn original_at(root: &Path, game_dir: &Path, file: &Path) -> Result<PathBuf> {
-    let slot = slot(root, game_dir, file)?;
-
-    Ok(
-        match is_file(&slot).await && ours(root, game_dir, file).await? {
-            true => slot,
-            false => file.to_path_buf(),
-        },
-    )
+    blocking(root, game_dir, file, original_at_now).await
 }
 
 pub async fn original(root: &Path, game_dir: &Path, file: &Path) -> Result<Vec<u8>> {
@@ -320,13 +321,13 @@ pub async fn everything_kept(root: &Path, game_dir: &Path) -> Result<Vec<PathBuf
 pub async fn put_back_the_rest(
     store: &Path,
     game_dir: &Path,
-    ours: impl Fn(&Path) -> bool,
+    mine: impl Fn(&Path) -> bool,
     wanted: &[PathBuf],
 ) -> Result<usize> {
     let mut given = 0;
 
     for one in everything_kept(store, game_dir).await? {
-        if wanted.contains(&one) || !ours(&one) {
+        if wanted.contains(&one) || !mine(&one) {
             continue;
         }
 
@@ -342,6 +343,13 @@ async fn is_file(at: &Path) -> bool {
     fs::metadata(at)
         .await
         .map(|found| found.is_file())
+        .unwrap_or(false)
+}
+
+async fn is_dir(at: &Path) -> bool {
+    fs::metadata(at)
+        .await
+        .map(|found| found.is_dir())
         .unwrap_or(false)
 }
 
@@ -393,21 +401,10 @@ async fn land_via(from: &Path, staging: &Path, to: &Path, doing: &str) -> Result
     Ok(())
 }
 
-const SHIPPED: &str = "shipped";
-
-async fn is_dir(at: &Path) -> bool {
-    fs::metadata(at)
-        .await
-        .map(|held| held.is_dir())
-        .unwrap_or(false)
-}
-
 pub async fn taken_over(root: &Path, game_dir: &Path, at: &Path) -> Result<bool> {
-    if !at.starts_with(game_dir) {
+    let Some(kept) = shipped(root, game_dir, at) else {
         return Ok(false);
-    }
-
-    let kept = under(root, SHIPPED, game_dir, at)?;
+    };
 
     if is_dir(&kept).await || !is_dir(at).await {
         return Ok(false);
@@ -417,11 +414,9 @@ pub async fn taken_over(root: &Path, game_dir: &Path, at: &Path) -> Result<bool>
 }
 
 pub async fn handed_back(root: &Path, game_dir: &Path, at: &Path) -> Result<bool> {
-    if !at.starts_with(game_dir) {
+    let Some(kept) = shipped(root, game_dir, at) else {
         return Ok(false);
-    }
-
-    let kept = under(root, SHIPPED, game_dir, at)?;
+    };
 
     if !is_dir(&kept).await {
         return Ok(false);
@@ -487,7 +482,7 @@ mod tests {
         let sandbox = tempfile::tempdir().expect("a temp folder");
         let game = sandbox.path().join("game");
         let root = sandbox.path().join("store");
-        let staged = root.join("staged").join("vietnamese");
+        let staged = root.join("staged").join("japanese");
 
         write(&staged.join("Map001.json.sheet"), "what the reader wrote").await;
 
