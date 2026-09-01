@@ -18,7 +18,10 @@
   const FONTS = [{ name: 'Font', extensions: ['ttf', 'otf'] }];
 
   let typed = $state('');
+  let box = $state<HTMLInputElement | null>(null);
   const sample = $derived(typed.trim() || SAMPLE);
+
+  $effect(() => box?.focus());
 
   const faces = $derived(app.faces);
 
@@ -68,6 +71,7 @@
     <input
       class="bare-input"
       placeholder={SAMPLE}
+      bind:this={box}
       bind:value={typed}
       aria-label="Sample text"
     />
