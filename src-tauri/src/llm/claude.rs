@@ -122,7 +122,7 @@ fn body(model: &str, max_tokens: u32, system: &str, user: &str, shaped: bool) ->
         asked["output_config"] = json!({
             "format": {
                 "type": "json_schema",
-                "schema": answer_schema(Spelling::Closed),
+                "schema": answer_schema(Spelling::JsonSchema),
             },
         });
     }
@@ -393,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             payload["output_config"]["format"]["schema"],
-            answer_schema(Spelling::Closed)
+            answer_schema(Spelling::JsonSchema)
         );
     }
 

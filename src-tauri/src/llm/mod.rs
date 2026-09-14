@@ -36,54 +36,47 @@ pub const ANSWERS: &str = "items";
 
 #[derive(Debug, Clone, Copy)]
 pub enum Spelling {
-    Plain,
-    Closed,
-    Shouted,
+    JsonSchema,
+    OpenApi,
 }
 
-fn kind(name: &str, spelling: Spelling) -> Value {
-    match spelling {
-        Spelling::Shouted => Value::String(name.to_uppercase()),
-        Spelling::Plain | Spelling::Closed => Value::String(name.to_string()),
-    }
-}
-
-fn shut(mut object: Value, closed: bool) -> Value {
-    if closed {
-        object["additionalProperties"] = Value::Bool(false);
+impl Spelling {
+    fn kind(self, name: &str) -> Value {
+        match self {
+            Self::OpenApi => Value::String(name.to_uppercase()),
+            Self::JsonSchema => Value::String(name.to_string()),
+        }
     }
 
-    object
+    fn sealed(self, mut object: Value) -> Value {
+        if matches!(self, Self::JsonSchema) {
+            object["additionalProperties"] = Value::Bool(false);
+        }
+
+        object
+    }
 }
 
 pub fn answer_schema(spelling: Spelling) -> Value {
-    let closed = matches!(spelling, Spelling::Closed);
+    let line = spelling.sealed(json!({
+        "type": spelling.kind("object"),
+        "properties": {
+            "id": { "type": spelling.kind("integer") },
+            "translation": { "type": spelling.kind("string") },
+        },
+        "required": ["id", "translation"],
+    }));
 
-    let line = shut(
-        json!({
-            "type": kind("object", spelling),
-            "properties": {
-                "id": { "type": kind("integer", spelling) },
-                "translation": { "type": kind("string", spelling) },
+    spelling.sealed(json!({
+        "type": spelling.kind("object"),
+        "properties": {
+            ANSWERS: {
+                "type": spelling.kind("array"),
+                "items": line,
             },
-            "required": ["id", "translation"],
-        }),
-        closed,
-    );
-
-    shut(
-        json!({
-            "type": kind("object", spelling),
-            "properties": {
-                ANSWERS: {
-                    "type": kind("array", spelling),
-                    "items": line,
-                },
-            },
-            "required": [ANSWERS],
-        }),
-        closed,
-    )
+        },
+        "required": [ANSWERS],
+    }))
 }
 
 #[derive(Debug)]
@@ -998,5 +991,50 @@ mod tests {
                 "a request worth sending again is not a request the server could not read"
             );
         }
+    }
+}
+
+#[test]
+fn a_schema_for_a_strict_endpoint_closes_every_object_it_has() {
+    let schema = answer_schema(Spelling::JsonSchema);
+    let line = &schema["properties"][ANSWERS]["items"];
+
+    assert_eq!(schema["type"], json!("object"));
+    assert_eq!(schema["additionalProperties"], json!(false));
+    assert_eq!(
+        line["additionalProperties"],
+        json!(false),
+        "a strict endpoint walks the whole tree and turns the request down over one open \
+         object, so the line buried inside the array counts as much as the root"
+    );
+    assert_eq!(line["required"], json!(["id", "translation"]));
+}
+
+#[test]
+fn a_schema_for_gemini_is_spelled_the_way_gemini_reads_it() {
+    let schema = answer_schema(Spelling::OpenApi);
+    let line = &schema["properties"][ANSWERS]["items"];
+
+    assert_eq!(schema["type"], json!("OBJECT"));
+    assert_eq!(schema["properties"][ANSWERS]["type"], json!("ARRAY"));
+    assert_eq!(line["properties"]["id"]["type"], json!("INTEGER"));
+    assert!(
+        schema["additionalProperties"].is_null() && line["additionalProperties"].is_null(),
+        "the very key a strict endpoint demands is a key Gemini does not know, and sending \
+         it turns every call into a refusal"
+    );
+}
+
+#[test]
+fn both_spellings_ask_for_the_same_answer_under_the_same_keys() {
+    for spelling in [Spelling::JsonSchema, Spelling::OpenApi] {
+        let schema = answer_schema(spelling);
+        assert_eq!(schema["required"], json!([ANSWERS]));
+        assert_eq!(
+            schema["properties"][ANSWERS]["items"]["required"],
+            json!(["id", "translation"]),
+            "the spelling is the provider's, the keys are the run's, and a provider that \
+             answered under its own key would hand back lines nothing can file"
+        );
     }
 }

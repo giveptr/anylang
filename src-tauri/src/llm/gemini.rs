@@ -154,7 +154,7 @@ fn body(system: &str, user: &str, temperature: Option<f32>, shaped: bool) -> Val
 
     if shaped {
         asked["generationConfig"]["responseMimeType"] = json!("application/json");
-        asked["generationConfig"]["responseSchema"] = answer_schema(Spelling::Shouted);
+        asked["generationConfig"]["responseSchema"] = answer_schema(Spelling::OpenApi);
     }
 
     asked

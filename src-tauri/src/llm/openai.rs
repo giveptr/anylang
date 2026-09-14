@@ -94,7 +94,8 @@ fn body(model: &str, system: &str, user: &str, temperature: Option<f32>, shaped:
             "type": "json_schema",
             "json_schema": {
                 "name": "translations",
-                "schema": answer_schema(Spelling::Plain),
+                "strict": true,
+                "schema": answer_schema(Spelling::JsonSchema),
             },
         });
         asked["stream_options"] = json!({ "include_usage": true });
@@ -216,7 +217,7 @@ mod tests {
 
         assert_eq!(
             payload["response_format"]["json_schema"]["schema"],
-            answer_schema(Spelling::Plain),
+            answer_schema(Spelling::JsonSchema),
             "an endpoint left to guess hands back the source key it was given, and a batch \
              answered under the wrong key is fifty lines paid for and thrown away"
         );
